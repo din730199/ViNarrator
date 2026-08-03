@@ -55,8 +55,9 @@ impl Ocr {
 
     /// rgba: dữ liệu thô từ [`crate::capture`] (RGBA). Nhánh Windows tự đảo sang BGRA.
     pub fn recognize_rgba(&self, rgba: &[u8], width: u32, height: u32, cfg: &Config) -> Result<String, String> {
-        match self {
-            Ocr::One(o) => o.recognize_rgba(rgba, width, height, cfg.min_height_ratio),
+        let latin = is_latin_mode(cfg);
+        let text = match self {
+            Ocr::One(o) => o.recognize_rgba(rgba, width, height, cfg.min_height_ratio)?,
             Ocr::Win(w) => {
                 let mut bgra = rgba.to_vec();
                 for px in bgra.chunks_exact_mut(4) {
@@ -66,12 +67,32 @@ impl Ocr {
                     &bgra,
                     width as i32,
                     height as i32,
+                    latin,
                     cfg.min_height_ratio,
                     cfg.binarize_threshold,
-                )
+                )?
             }
-        }
+        };
+        Ok(drop_junk_lines(&text, latin, cfg.min_clean_ratio))
     }
+}
+
+/// Chế độ nguồn dùng chữ Latin? "en" có, "zh" không — quyết định việc phạt chữ ngoài ASCII.
+fn is_latin_mode(cfg: &Config) -> bool {
+    cfg.mode != "zh"
+}
+
+/// Bỏ những dòng OCR bịa. Áp cho CẢ HAI engine — trước đây `cleanliness` chỉ dùng để chọn
+/// giữa hai lượt của Windows OCR, chưa bao giờ loại dòng, nên rác đi thẳng vào TTS.
+/// `min_ratio <= 0` = tắt lọc.
+pub fn drop_junk_lines(text: &str, latin: bool, min_ratio: f32) -> String {
+    if min_ratio <= 0.0 {
+        return text.to_string();
+    }
+    text.lines()
+        .filter(|l| l.trim().is_empty() || clean_ratio(l, latin) >= min_ratio)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub struct WindowsOcr {
@@ -117,6 +138,7 @@ impl WindowsOcr {
         bgra: &[u8],
         width: i32,
         height: i32,
+        latin: bool,
         min_height_ratio: f32,
         binarize_threshold: u8,
     ) -> Result<String, String> {
@@ -125,7 +147,7 @@ impl WindowsOcr {
         }
         let raw = self.pass(bgra, width, height, min_height_ratio)?;
         let bin = self.pass(&binarize(bgra, binarize_threshold), width, height, min_height_ratio)?;
-        Ok(if cleanliness(&bin) > cleanliness(&raw) { bin } else { raw })
+        Ok(if cleanliness(&bin, latin) > cleanliness(&raw, latin) { bin } else { raw })
     }
 
     fn pass(&self, bgra: &[u8], width: i32, height: i32, min_ratio: f32) -> Result<String, String> {
@@ -169,20 +191,43 @@ fn binarize(bgra: &[u8], threshold: u8) -> Vec<u8> {
     out
 }
 
-/// Điểm "sạch": chữ/số/khoảng trắng +1, dấu câu thường 0, ký tự lạ -3.
+/// Dấu câu thường: KHÔNG tính vào cả tử lẫn mẫu, nếu không "Hmm..." (3/6) sẽ bị coi là rác.
+const NEUTRAL: &str = ",.!?'\"-:;…";
+/// Chữ có dấu lọt vào khung tiếng Anh gần như chắc chắn là OCR bịa (`Cả`, `Phả` trong
+/// `' oanqCảaTôi Phả Server Minecraft`). Phạt nặng hơn ký tự lạ vì tín hiệu mạnh hơn.
+const FOREIGN_LETTER: i32 = -6;
+const ODD_CHAR: i32 = -3;
+
+/// None = dấu câu trung tính (bỏ khỏi phép tính).
+fn char_score(c: char, latin: bool) -> Option<i32> {
+    if NEUTRAL.contains(c) {
+        return None;
+    }
+    Some(if c.is_alphanumeric() || c.is_whitespace() {
+        if latin && c.is_alphabetic() && !c.is_ascii() {
+            FOREIGN_LETTER
+        } else {
+            1
+        }
+    } else {
+        ODD_CHAR
+    })
+}
+
+/// Điểm "sạch" TUYỆT ĐỐI — dùng để chọn giữa hai lượt Windows OCR (so hai chuỗi cùng nội dung).
 /// Ảnh bị nhị phân hoá sai làm OCR bấm nát chữ -> sinh nhiều ký tự lạ -> điểm thấp.
-fn cleanliness(s: &str) -> i32 {
-    s.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c.is_whitespace() {
-                1
-            } else if ",.!?'\"-:;".contains(c) {
-                0
-            } else {
-                -3
-            }
-        })
-        .sum()
+fn cleanliness(s: &str, latin: bool) -> i32 {
+    s.chars().filter_map(|c| char_score(c, latin)).sum()
+}
+
+/// Điểm "sạch" CHUẨN HOÁ 0..1 — dùng để loại dòng rác, không phụ thuộc độ dài dòng.
+/// Dòng đọc đúng ≈ 1.0; `' oanqCảaTôi Phả Server Minecraft Bi Bo H` ≈ 0.50.
+fn clean_ratio(s: &str, latin: bool) -> f32 {
+    let scores: Vec<i32> = s.chars().filter_map(|c| char_score(c, latin)).collect();
+    if scores.is_empty() {
+        return 0.0;
+    }
+    scores.iter().sum::<i32>() as f32 / scores.len() as f32
 }
 
 #[cfg(test)]
@@ -202,8 +247,43 @@ mod tests {
     #[test]
     fn diem_sach_phat_hien_chu_bi_bam_nat() {
         // bản đọc đúng phải hơn hẳn bản đầy ký tự lạ
-        assert!(cleanliness("all we saw were abandoned builds") > cleanliness("the od or•clge •s fa •rg"));
+        assert!(
+            cleanliness("all we saw were abandoned builds", true)
+                > cleanliness("the od or•clge •s fa •rg", true)
+        );
         // dấu câu thường KHÔNG bị phạt
-        assert_eq!(cleanliness("ab."), cleanliness("ab"));
+        assert_eq!(cleanliness("ab.", true), cleanliness("ab", true));
+    }
+
+    #[test]
+    fn loai_dong_rac_giu_dong_that() {
+        // đúng dòng rác người dùng gặp khi xem video Minecraft
+        let junk = "' oanqCảaTôi Phả Server Minecraft Bi Bo H";
+        let real = "all we saw were abandoned builds";
+        assert!(clean_ratio(junk, true) < 0.6, "{}", clean_ratio(junk, true));
+        assert!(clean_ratio(real, true) >= 0.6);
+        assert_eq!(drop_junk_lines(&format!("{real}\n{junk}"), true, 0.6), real);
+        // ngưỡng 0 = tắt lọc
+        assert_eq!(drop_junk_lines(junk, true, 0.0), junk);
+    }
+
+    #[test]
+    fn khong_loai_nham_cau_that() {
+        // dấu ba chấm / dấu câu dày không được biến câu ngắn thành rác
+        for s in ["Hmm...", "Wait — what?!", "OK!", "\"Run,\" he said."] {
+            assert!(clean_ratio(s, true) >= 0.6, "{s} -> {}", clean_ratio(s, true));
+        }
+        // chế độ Trung: chữ ngoài ASCII là BÌNH THƯỜNG, không được phạt
+        let zh = "我们看到的只是废弃的建筑";
+        assert!(clean_ratio(zh, false) >= 0.6);
+        assert!(clean_ratio(zh, true) < 0.6); // cùng chuỗi mà bật chế độ Latin thì là rác
+    }
+
+    #[test]
+    fn chu_co_dau_lac_vao_khung_tieng_anh_bi_phat() {
+        // một chữ có dấu lẻ trong câu dài vẫn qua (tên riêng: "Pokémon", "café")
+        assert!(clean_ratio("Pokémon trainers gather at the gym", true) >= 0.6);
+        // nhưng dày đặc thì không
+        assert!(clean_ratio("Cả Tôi Phả Bi Bo", true) < 0.6);
     }
 }

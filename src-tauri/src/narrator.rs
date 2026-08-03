@@ -2,6 +2,7 @@
 //! Trạng thái đẩy về UI qua event Tauri: "status" (chuỗi trạng thái) và "text" (câu vừa đọc).
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,14 +12,14 @@ use crate::capture;
 use crate::config::{self, Config, Region};
 use crate::dedup::LineDeduper;
 use crate::ocr::Ocr;
-use crate::translate::Translator;
+use crate::translate::{self, Translator};
 use crate::tts::TtsEngine;
 
 pub struct Narrator {
     cfg: Arc<Mutex<Config>>,
     running: Arc<AtomicBool>,
     quit: Arc<AtomicBool>,
-    reload_ocr: Arc<AtomicBool>,
+    reload: Arc<AtomicBool>,
     last_text: Arc<Mutex<String>>,
     tts: Arc<TtsEngine>,
 }
@@ -30,7 +31,7 @@ impl Narrator {
             cfg: Arc::new(Mutex::new(cfg)),
             running: Arc::new(AtomicBool::new(false)),
             quit: Arc::new(AtomicBool::new(false)),
-            reload_ocr: Arc::new(AtomicBool::new(true)),
+            reload: Arc::new(AtomicBool::new(true)),
             last_text: Arc::new(Mutex::new(String::new())),
             tts,
         };
@@ -39,7 +40,7 @@ impl Narrator {
             cfg: me.cfg.clone(),
             running: me.running.clone(),
             quit: me.quit.clone(),
-            reload_ocr: me.reload_ocr.clone(),
+            reload: me.reload.clone(),
             last_text: me.last_text.clone(),
             tts: me.tts.clone(),
         };
@@ -87,12 +88,34 @@ impl Narrator {
 
     pub fn set_mode(&self, mode: &str) {
         self.edit(|c| c.apply_mode(mode));
-        self.reload_ocr.store(true, Ordering::Relaxed);
+        self.reload.store(true, Ordering::Relaxed);
     }
 
     pub fn set_engine(&self, engine: String) {
         self.edit(|c| c.ocr_engine = engine.clone());
-        self.reload_ocr.store(true, Ordering::Relaxed);
+        self.reload.store(true, Ordering::Relaxed);
+    }
+
+    /// engine: "google" | "llm". Các field LLM chỉ có tác dụng khi engine = "llm".
+    pub fn set_translate(&self, engine: String, base_url: String, model: String, api_key: String, context_lines: usize) {
+        self.edit(|c| {
+            c.translate_engine = engine;
+            c.llm_base_url = base_url;
+            c.llm_model = model;
+            c.llm_api_key = api_key;
+            c.llm_context_lines = context_lines;
+        });
+        self.reload.store(true, Ordering::Relaxed);
+    }
+
+    /// Ba knob tinh chỉnh trước đây chỉ sửa được bằng tay trong config.json.
+    pub fn set_tuning(&self, interval_ms: u64, min_line_len: usize, min_clean_ratio: f32) {
+        self.edit(|c| {
+            c.interval_ms = interval_ms.clamp(200, 5000);
+            c.min_line_len = min_line_len.clamp(1, 20);
+            c.min_clean_ratio = min_clean_ratio.clamp(0.0, 1.0);
+        });
+        self.reload.store(true, Ordering::Relaxed); // deduper dựng lại theo min_line_len
     }
 
     pub fn set_voice(&self, name: String) {
@@ -129,7 +152,7 @@ struct Worker {
     cfg: Arc<Mutex<Config>>,
     running: Arc<AtomicBool>,
     quit: Arc<AtomicBool>,
-    reload_ocr: Arc<AtomicBool>,
+    reload: Arc<AtomicBool>,
     last_text: Arc<Mutex<String>>,
     tts: Arc<TtsEngine>,
 }
@@ -142,11 +165,19 @@ impl Worker {
     fn run(self) {
         crate::ensure_com();
         let mut ocr: Option<Ocr> = None;
-        let mut translator = Translator::new(false, "en", "vi");
         let mut deduper = {
             let c = self.cfg.lock().unwrap();
             LineDeduper::new(c.dedup_require_stable, c.min_line_len, c.fuzzy_threshold)
         };
+
+        // Dịch + đọc chạy ở thread RIÊNG: một câu dịch bằng AI tốn 200-800ms, để chung vòng
+        // chụp thì khung kế tiếp bị trễ đúng ngần ấy và phụ đề đổi trong lúc đó là mất luôn.
+        let (tx, rx) = mpsc::channel::<Msg>();
+        {
+            let (app, tts, last_text) =
+                (self.app.clone(), self.tts.clone(), self.last_text.clone());
+            std::thread::spawn(move || translate_loop(app, tts, last_text, rx));
+        }
 
         loop {
             if self.quit.load(Ordering::Relaxed) {
@@ -154,7 +185,7 @@ impl Worker {
             }
             let cfg = self.cfg.lock().unwrap().clone();
 
-            if self.reload_ocr.swap(false, Ordering::Relaxed) {
+            if self.reload.swap(false, Ordering::Relaxed) {
                 // Lần đầu chọn OneOCR phải chép ~110MB từ gói Snipping Tool -> báo trước
                 // để người dùng không tưởng app treo.
                 if cfg.ocr_engine != "windows" && !crate::oneocr::runtime_ready() {
@@ -162,14 +193,13 @@ impl Worker {
                 } else {
                     self.status("Đang khởi tạo OCR...");
                 }
+                let _ = tx.send(Msg::Reload(Box::new(cfg.clone())));
                 match Ocr::new(&cfg) {
                     Ok(o) => {
-                        translator =
-                            Translator::new(cfg.translate, &cfg.translate_from, &cfg.translate_to);
                         self.status(format!(
-                            "Sẵn sàng — {}, dịch {}",
+                            "Sẵn sàng — {}, {}",
                             o.info(),
-                            if translator.enabled { "ON" } else { "OFF" }
+                            translate::describe(&cfg)
                         ));
                         ocr = Some(o);
                     }
@@ -187,7 +217,7 @@ impl Worker {
             };
 
             let t0 = Instant::now();
-            if let Err(e) = self.tick(engine, &translator, &mut deduper, &cfg) {
+            if let Err(e) = self.tick(engine, &tx, &mut deduper, &cfg) {
                 self.status(format!("Lỗi: {e}"));
             }
             // Giữ nhịp ~interval (trừ thời gian OCR đã tốn) -> không cộng dồn -> nhạy hơn.
@@ -200,7 +230,7 @@ impl Worker {
     fn tick(
         &self,
         engine: &Ocr,
-        translator: &Translator,
+        tx: &Sender<Msg>,
         deduper: &mut LineDeduper,
         cfg: &Config,
     ) -> Result<(), String> {
@@ -208,11 +238,56 @@ impl Worker {
         capture::mask_exclusion(&mut rgba, w, h, &cfg.region, cfg.exclude_region.as_ref());
         let text = engine.recognize_rgba(&rgba, w, h, cfg)?;
         for line in deduper.feed(&text) {
-            let spoken = translator.translate(&line);
-            *self.last_text.lock().unwrap() = spoken.clone();
-            let _ = self.app.emit("text", &spoken);
-            self.tts.speak(&spoken);
+            let _ = tx.send(Msg::Line(line));
         }
         Ok(())
+    }
+}
+
+enum Msg {
+    Line(String),
+    Reload(Box<Config>),
+}
+
+/// Câu tồn đọng tối đa. Dịch không kịp phụ đề thì thà bỏ câu cũ còn hơn đọc trễ cả phút —
+/// cùng lý do hàng đợi TTS cap 3.
+const MAX_PENDING: usize = 3;
+
+/// Một mục log: giữ cả bản gốc để phân biệt lỗi OCR với lỗi dịch.
+#[derive(Clone, serde::Serialize)]
+struct Spoken {
+    src: String,
+    out: String,
+}
+
+fn translate_loop(
+    app: AppHandle,
+    tts: Arc<TtsEngine>,
+    last_text: Arc<Mutex<String>>,
+    rx: Receiver<Msg>,
+) {
+    let mut translator = Translator::new(&Config::default());
+    // recv() lỗi = thread chụp đã chết -> thoát luôn.
+    while let Ok(first) = rx.recv() {
+        // Gom hết thứ đã tới trong lúc đang bận dịch câu trước, rồi mới quyết bỏ cái nào.
+        let mut pending = Vec::new();
+        let mut msg = Some(first);
+        while let Some(m) = msg {
+            match m {
+                Msg::Reload(c) => translator = Translator::new(&c),
+                Msg::Line(l) => pending.push(l),
+            }
+            msg = rx.try_recv().ok();
+        }
+        let skip = pending.len().saturating_sub(MAX_PENDING);
+        if skip > 0 {
+            eprintln!("[translate] bỏ {skip} câu tồn đọng (dịch chậm hơn phụ đề)");
+        }
+        for src in pending.into_iter().skip(skip) {
+            let out = translator.translate(&src);
+            *last_text.lock().unwrap() = out.clone();
+            let _ = app.emit("text", Spoken { src, out: out.clone() });
+            tts.speak(&out);
+        }
     }
 }

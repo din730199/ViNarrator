@@ -18,7 +18,7 @@ Kiến trúc bám theo RiTaiAI: logic nặng ở Rust (`src-tauri/src`), UI Reac
 yarn install
 yarn dev      # cargo tauri dev
 yarn build    # cargo tauri build -> src-tauri/target/release/bundle/nsis/*-setup.exe
-yarn test     # cargo test (26 unit test)
+yarn test     # cargo test (37 unit test)
 ```
 
 Installer ~2.8 MB, exe ~11 MB.
@@ -29,6 +29,7 @@ Installer ~2.8 MB, exe ~11 MB.
 - **SỬA VÙNG QUÉT** — kéo chuột chọn vùng phụ đề/thoại (overlay phủ màn hình chính).
 - **VÙNG LOẠI TRỪ** — kéo chọn vùng con bỏ qua (HUD/logo) trong khung quét; nút *xoá* để bỏ.
 - **CHẾ ĐỘ** — Anh→Việt hoặc Trung→Việt.
+- **CÁCH DỊCH** — Google Dịch hoặc AI (xem dưới).
 - **GIỌNG ĐỌC / ÂM LƯỢNG / TỐC ĐỘ**.
 
 Cấu hình lưu ở `%APPDATA%\ViNarrator\config.json` (giữ nguyên tên field của bản Python
@@ -58,14 +59,53 @@ Hai chi tiết kỹ thuật đáng nhớ:
 - `installMode` để `currentUser` (cài vào `%LOCALAPPDATA%`) nên chép file không cần quyền admin.
   Đổi sang `perMachine` sẽ làm OneOCR không dùng được.
 
+### Cách dịch
+
+Mặc định là **Google Dịch** (endpoint web `client=gtx`, không cần key, ~150ms). Dịch từng câu
+rời rạc nên hay sai xưng hô — "you" lúc thì *bạn*, lúc thì *mày*.
+
+Chọn **AI** trong mục *CÁCH DỊCH* thì mỗi câu được gửi kèm vài câu trước làm ngữ cảnh, model
+tự chọn xưng hô nhất quán và hiểu thuật ngữ game. Kéo thanh **NGỮ CẢNH** về 0 để tắt phần này
+(rẻ token, nhanh hơn, dịch rời như Google).
+
+Mọi provider đều gọi qua **một** API OpenAI-compatible (`POST {base_url}/chat/completions`),
+chỉ khác `base_url` + `model`, nên thêm nhà cung cấp mới = sửa `LLM_PRESETS` trong `src/types.ts`.
+Hạn mức free tier tra 8/2026:
+
+| | Free tier | Trễ | Ghi chú |
+|---|---|---|---|
+| **Groq** (mặc định) | 30 lệnh/phút · 14.400/ngày | ~200–400ms | key ở [console.groq.com](https://console.groq.com), không cần thẻ |
+| Gemini | 15/phút · **1.000/ngày** | ~500–900ms | dịch mượt nhất, nhưng hết quota sau ~1 giờ chơi |
+| OpenRouter | model `:free` ~50/ngày | chậm, hay 429 | chỉ để thử |
+
+ViNarrator quét 1,2s/lần, dedup lọc còn ~10–30 câu mới/phút — chỉ Groq chịu nổi liên tục.
+
+Hỏng ở đâu cũng **không** làm gián đoạn giọng đọc: thiếu key / lỗi mạng / model trả lời dài
+bất thường → tự lùi về Google Dịch; Google lỗi nữa → đọc nguyên văn. Dính **429 thì nghỉ hẳn
+60s** rồi mới thử lại, gọi tiếp chỉ tổ ăn 429.
+
+API key lưu **thô** trong `%APPDATA%\ViNarrator\config.json` (`llm_api_key`) — app cá nhân,
+không hardcode và không đóng gói kèm, nhưng đừng share file config đó.
+
 ### Chỉnh độ chính xác OCR
 
-Hai knob trong `config.json`, sửa khi phụ đề bị bỏ sót hoặc lẫn chữ rác:
+Ba knob đầu chỉnh ngay trong giao diện (**TINH CHỈNH BẮT CHỮ**), phần còn lại sửa trong `config.json`:
 
 | Field | Mặc định | Ý nghĩa |
 |---|---|---|
+| `min_clean_ratio` | `0.6` | Bỏ dòng có điểm "sạch" chuẩn hoá dưới ngưỡng — chặn chữ OCR bịa. Nâng nếu còn nghe đọc rác, hạ (hoặc `0` để tắt) nếu câu thật bị bỏ oan. |
+| `min_line_len` | `4` | Bỏ dòng ngắn hơn ngần này ký tự. |
+| `interval_ms` | `1200` | Nhịp quét. |
 | `min_height_ratio` | `0.6` | Bỏ dòng thấp hơn `tỉ lệ × dòng cao nhất` trong khung. Cắt chữ nhỏ của giao diện (thanh tua, tiêu đề video). Đặt `0` để tắt. Áp cho cả hai engine. |
 | `binarize_threshold` | `150` | Chỉ dùng cho Windows OCR: ngưỡng cho lượt OCR nhị phân hoá (`max(R,G,B) ≥ ngưỡng` = chữ). Hạ xuống nếu phụ đề mờ/xám; nâng lên nếu nền sáng bị nhận nhầm. |
+
+**Lọc chữ rác** cho mỗi ký tự một điểm rồi lấy trung bình: chữ/số/khoảng trắng `+1`, ký tự lạ
+`-3`, chữ có dấu **khi nguồn là tiếng Anh** `-6` (dấu tiếng Việt lọt vào khung tiếng Anh gần như
+chắc chắn là OCR bịa). Dấu câu thường bị loại khỏi cả tử lẫn mẫu, nếu không `Hmm...` sẽ thành rác.
+Đo thật: `' oanqCảaTôi Phả Server Minecraft Bi Bo H` được 0.50, câu đọc đúng được 1.00.
+Chế độ Trung tắt luật chữ có dấu vì chữ Hán vốn ngoài ASCII.
+
+Log hiện **cả bản gốc (mờ) lẫn bản dịch** — nghe sai thì nhìn là biết lỗi ở OCR hay ở khâu dịch.
 
 Nhánh Windows OCR chạy **hai lượt** — ảnh gốc và ảnh nhị phân hoá — rồi lấy bản ít ký tự rác hơn:
 chỉ ảnh gốc đạt trung bình 0.922 / tệ nhất 0.375 trên 8 mẫu dễ, hai lượt đạt 1.000 cả 8.
@@ -82,14 +122,19 @@ mới là cái phân biệt được.
 | `src-tauri/src/capture.rs` | chụp vùng màn hình BGRA + tô trắng vùng loại trừ | `capture.py`, `mask_exclusion` |
 | `src-tauri/src/ocr.rs` | chọn engine + `Windows.Media.Ocr` | `ocr.py` (winsdk) |
 | `src-tauri/src/oneocr.rs` | OneOCR (Snipping Tool) + tự chép runtime | — (mới) |
-| `src-tauri/src/translate.rs` | Google Translate qua `reqwest` | `translate.py` (deep-translator) |
+| `src-tauri/src/translate.rs` | Google Translate + LLM (OpenAI-compatible) | `translate.py` (deep-translator) |
 | `src-tauri/src/tts.rs` | `Windows.Media.SpeechSynthesis` + `PlaySound` | `tts.py` (winsdk + winsound) |
 | `src-tauri/src/dedup.rs` | chống đọc trùng phụ đề cuộn | `dedup.py` |
 | `src-tauri/src/speech_queue.rs` | hàng đợi đọc (dedup + cap 3) | `speech_queue.py` |
-| `src-tauri/src/narrator.rs` | worker chụp→OCR→dịch→đọc | `narrator.py` |
+| `src-tauri/src/narrator.rs` | 2 thread: chụp→OCR→dedup, và dịch→đọc | `narrator.py` |
 | `src-tauri/src/config.rs` | đọc/ghi config | `config.py` |
 | `src/App.tsx` | giao diện | `gui.py` |
 | `src/overlay/Overlay.tsx` | overlay kéo chọn vùng | `region_select.py` |
+
+**Dịch chạy ở thread riêng.** Một câu dịch bằng AI tốn 200–800ms; để chung vòng chụp thì khung
+kế tiếp trễ đúng ngần ấy và phụ đề đổi trong lúc đó là mất luôn. Thread chụp đẩy câu qua channel,
+thread dịch gom hết cái đã tới rồi **bỏ bớt, chỉ giữ 3 câu mới nhất** — dịch không kịp phụ đề thì
+thà bỏ câu cũ còn hơn đọc trễ cả phút.
 
 Unit test của bản Python (`tests/test_dedup.py`, `tests/test_speech_queue.py`) đã port nguyên
 sang Rust và đều pass — dùng để kiểm chứng bản port. Cột "port từ" trỏ tới file của bản Python,

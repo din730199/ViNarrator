@@ -69,6 +69,31 @@ fn set_engine(n: tauri::State<Narrator>, engine: String) -> Config {
     n.config()
 }
 
+/// engine: "google" | "llm". Ba field LLM chỉ dùng khi engine = "llm".
+#[tauri::command]
+fn set_translate(
+    n: tauri::State<Narrator>,
+    engine: String,
+    base_url: String,
+    model: String,
+    api_key: String,
+    context_lines: usize,
+) -> Config {
+    n.set_translate(engine, base_url, model, api_key, context_lines);
+    n.config()
+}
+
+#[tauri::command]
+fn set_tuning(
+    n: tauri::State<Narrator>,
+    interval_ms: u64,
+    min_line_len: usize,
+    min_clean_ratio: f32,
+) -> Config {
+    n.set_tuning(interval_ms, min_line_len, min_clean_ratio);
+    n.config()
+}
+
 #[tauri::command]
 fn set_voice(n: tauri::State<Narrator>, name: String) {
     n.set_voice(name);
@@ -191,6 +216,8 @@ pub fn run() {
             toggle,
             set_mode,
             set_engine,
+            set_translate,
+            set_tuning,
             set_voice,
             set_speed,
             set_volume,

@@ -91,6 +91,9 @@ impl TtsEngine {
         );
         std::thread::spawn(move || {
             ensure_com();
+            // Giữ nguyên synthesizer giữa các câu: dựng mới + `AllVoices()` mỗi câu là phí,
+            // giọng chỉ đổi khi người dùng bấm dropdown.
+            let mut speaker: Option<Speaker> = None;
             while !quit.load(Ordering::Relaxed) {
                 let Some(text) = queue.try_dequeue() else {
                     let (lock, cv) = &*wake;
@@ -102,9 +105,12 @@ impl TtsEngine {
                     continue;
                 };
                 let p = params.lock().unwrap().clone();
-                match synthesize(&p, &text) {
+                match synthesize(&mut speaker, &p, &text) {
                     Ok(wav) => play_blocking(&wav),
-                    Err(e) => eprintln!("[TTS] lỗi: {e}"),
+                    Err(e) => {
+                        eprintln!("[TTS] lỗi: {e}");
+                        speaker = None; // engine hỏng -> dựng lại ở câu sau
+                    }
                 }
             }
         });
@@ -155,15 +161,46 @@ impl TtsEngine {
     }
 }
 
-fn synthesize(p: &Params, text: &str) -> windows::core::Result<Vec<u8>> {
-    let synth = SpeechSynthesizer::new()?;
-    if let Some(v) = resolve_voice(&p.voice_name) {
-        synth.SetVoice(&v)?;
+/// Synthesizer dùng lại + tên giọng ĐANG gắn vào nó (để biết khi nào cần `SetVoice`).
+struct Speaker {
+    synth: SpeechSynthesizer,
+    voice_name: String,
+}
+
+/// Lấy synthesizer từ cache, chỉ quét `AllVoices()` khi tên giọng đổi.
+/// Tốc độ/âm lượng nằm trong `Options()` nên set lại mỗi câu — chỉ là ghi field, không tốn gì.
+fn speaker_for<'a>(
+    cache: &'a mut Option<Speaker>,
+    p: &Params,
+) -> windows::core::Result<&'a SpeechSynthesizer> {
+    if cache.is_none() {
+        *cache = Some(Speaker {
+            synth: SpeechSynthesizer::new()?,
+            // rỗng != mọi DisplayName hợp lệ -> lượt đầu chắc chắn chạy SetVoice
+            voice_name: String::new(),
+        });
     }
-    let opts = synth.Options()?;
+    let s = cache.as_mut().expect("vừa gán ở trên");
+    if s.voice_name != p.voice_name {
+        if let Some(v) = resolve_voice(&p.voice_name) {
+            s.synth.SetVoice(&v)?;
+        }
+        // Ghi nhận kể cả khi không tìm thấy giọng: máy chưa cài giọng Việt thì đừng quét lại
+        // toàn bộ giọng hệ thống ở mọi câu. Đổi giọng trên UI sẽ set_params -> khác tên -> quét lại.
+        s.voice_name = p.voice_name.clone();
+    }
+    let opts = s.synth.Options()?;
     opts.SetSpeakingRate(p.speed.clamp(0.5, 6.0))?;
     opts.SetAudioVolume(f64::from(p.volume.min(100)) / 100.0)?;
+    Ok(&s.synth)
+}
 
+fn synthesize(
+    cache: &mut Option<Speaker>,
+    p: &Params,
+    text: &str,
+) -> windows::core::Result<Vec<u8>> {
+    let synth = speaker_for(cache, p)?;
     let stream = synth.SynthesizeTextToStreamAsync(&HSTRING::from(text))?.join()?;
     let size = stream.Size()? as u32;
     let reader = DataReader::CreateDataReader(&stream)?;

@@ -38,9 +38,24 @@ pub struct Config {
     /// Ngưỡng nhị phân hoá cho lượt OCR thứ hai (max(R,G,B) >= ngưỡng coi là chữ).
     /// Hạ xuống nếu phụ đề mờ/xám, nâng lên nếu nền sáng bị nhận nhầm thành chữ.
     pub binarize_threshold: u8,
+    /// Bỏ dòng OCR có điểm "sạch" chuẩn hoá dưới ngưỡng này (0..1) — chặn chữ bịa.
+    /// Nâng lên nếu vẫn nghe đọc chữ rác; hạ xuống (hoặc 0 để tắt) nếu câu thật bị bỏ oan.
+    pub min_clean_ratio: f32,
     pub translate: bool,
     pub translate_from: String,
     pub translate_to: String,
+
+    /// "google" (endpoint web, không cần key) | "llm" (API OpenAI-compatible).
+    /// Để "llm" mà `llm_api_key` rỗng thì vẫn chạy Google — xem `translate.rs`.
+    pub translate_engine: String,
+    /// Base URL kiểu OpenAI (không kèm `/chat/completions`). Mặc định Groq: free tier
+    /// 30 lệnh/phút · 14.400/ngày, đủ cho cả buổi chơi, lại là provider nhanh nhất.
+    pub llm_base_url: String,
+    pub llm_model: String,
+    /// Key để trong config của user (`%APPDATA%`), KHÔNG hardcode và không đóng gói kèm.
+    pub llm_api_key: String,
+    /// Số câu trước gửi kèm cho LLM để chọn xưng hô nhất quán. 0 = tắt (rẻ token, nhanh hơn).
+    pub llm_context_lines: usize,
 
     pub voice_name: String,
     /// bội số 0.5..2.0
@@ -56,16 +71,23 @@ impl Default for Config {
             exclude_region: None,
             interval_ms: 1200,
             dedup_require_stable: true,
-            min_line_len: 2,
+            // 4 chứ không phải 2: dòng 2 ký tự gần như luôn là mảnh vụn OCR, không phải thoại.
+            min_line_len: 4,
             fuzzy_threshold: 0.82,
             mode: "en".into(),
             ocr_engine: "oneocr".into(),
             ocr_language: "en-US".into(),
             min_height_ratio: 0.6,
             binarize_threshold: 150,
+            min_clean_ratio: 0.6,
             translate: true,
             translate_from: "en".into(),
             translate_to: "vi".into(),
+            translate_engine: "google".into(),
+            llm_base_url: "https://api.groq.com/openai/v1".into(),
+            llm_model: "llama-3.3-70b-versatile".into(),
+            llm_api_key: String::new(),
+            llm_context_lines: 3,
             voice_name: "Microsoft An".into(),
             speed: 1.0,
             volume: 100,
@@ -150,5 +172,6 @@ mod tests {
         assert_eq!(c.region.width, 3);
         assert_eq!(c.volume, 40);
         assert_eq!(c.interval_ms, 1200);
+        assert_eq!(c.min_clean_ratio, 0.6);
     }
 }

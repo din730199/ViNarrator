@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Config, ENGINES, MODES, Voice } from './types';
+import { Config, ENGINES, LLM_PRESETS, MODES, Spoken, Voice } from './types';
 
 const PURPLE = '#7c3aed';
 const RED = '#b91c1c';
@@ -16,7 +16,7 @@ export default function App() {
   const [status, setStatus] = useState('');
   // Lỗi nạp phải có state RIÊNG: dùng chung `status` thì event "status" của worker ghi đè mất.
   const [err, setErr] = useState('');
-  const [log, setLog] = useState<string[]>([]);
+  const [log, setLog] = useState<Spoken[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -28,7 +28,7 @@ export default function App() {
     const un = [
       listen<string>('status', (e) => setStatus(e.payload)),
       // giữ 200 dòng gần nhất — log dài không giúp gì mà tốn RAM
-      listen<string>('text', (e) => setLog((l) => [...l, e.payload].slice(-200))),
+      listen<Spoken>('text', (e) => setLog((l) => [...l, e.payload].slice(-200))),
       listen<boolean>('running', (e) => setRunning(e.payload)), // hotkey Ctrl+Alt+S đổi trạng thái
       listen<Config>('config', (e) => setCfg(e.payload)), // overlay chọn xong vùng ở cửa sổ khác
     ];
@@ -44,6 +44,25 @@ export default function App() {
   if (!cfg) return <div style={{ padding: 18 }}>{err || 'Đang tải…'}</div>;
 
   const ex = cfg.exclude_region;
+  const preset = LLM_PRESETS.find((p) => p.base_url === cfg.llm_base_url);
+
+  // Gõ tới đâu chỉ đổi state tại chỗ; ghi config + dựng lại translator để lúc RỜI ô
+  // (onBlur) — không thì mỗi ký tự của API key là một lần ghi file + reload engine.
+  const save = (c: Config) =>
+    void invoke<Config>('set_translate', {
+      engine: c.translate_engine,
+      baseUrl: c.llm_base_url,
+      model: c.llm_model,
+      apiKey: c.llm_api_key,
+      contextLines: c.llm_context_lines,
+    }).then(setCfg);
+
+  const saveTuning = (c: Config) =>
+    void invoke<Config>('set_tuning', {
+      intervalMs: c.interval_ms,
+      minLineLen: c.min_line_len,
+      minCleanRatio: c.min_clean_ratio,
+    }).then(setCfg);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -87,7 +106,9 @@ export default function App() {
         )}
       </div>
 
-      <div style={pad}>
+      {/* minHeight:0 + overflow => mở khối AI ra thì phần này tự cuộn, không đẩy log ra
+          ngoài cửa sổ (flex item mặc định không co xuống dưới kích thước nội dung). */}
+      <div style={{ ...pad, overflowY: 'auto', minHeight: 0 }}>
         <label>CHẾ ĐỘ</label>
         <select
           value={cfg.mode}
@@ -113,6 +134,129 @@ export default function App() {
             </option>
           ))}
         </select>
+
+        <label>CÁCH DỊCH</label>
+        <select
+          value={cfg.translate_engine}
+          onChange={(e) => save({ ...cfg, translate_engine: e.target.value })}
+        >
+          <option value="google">Google Dịch — nhanh, không cần key</option>
+          <option value="llm">AI — dịch theo ngữ cảnh, cần API key</option>
+        </select>
+
+        {cfg.translate_engine === 'llm' && (
+          <div style={{ borderLeft: `2px solid ${PURPLE}`, paddingLeft: 10, marginTop: 6 }}>
+            <label>NHÀ CUNG CẤP</label>
+            <select
+              value={preset?.name ?? 'custom'}
+              onChange={(e) => {
+                const p = LLM_PRESETS.find((x) => x.name === e.target.value);
+                if (p) save({ ...cfg, llm_base_url: p.base_url, llm_model: p.model });
+              }}
+            >
+              {LLM_PRESETS.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name}
+                </option>
+              ))}
+              {!preset && <option value="custom">Tự nhập</option>}
+            </select>
+            <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+              {preset?.free ?? 'base URL tự nhập (API kiểu OpenAI)'}
+            </div>
+
+            <label>API KEY</label>
+            <input
+              type="password"
+              placeholder="dán key vào đây"
+              value={cfg.llm_api_key}
+              onChange={(e) => setCfg({ ...cfg, llm_api_key: e.target.value })}
+              onBlur={() => save(cfg)}
+            />
+
+            <label>MODEL</label>
+            <input
+              type="text"
+              value={cfg.llm_model}
+              onChange={(e) => setCfg({ ...cfg, llm_model: e.target.value })}
+              onBlur={() => save(cfg)}
+            />
+
+            <label>BASE URL</label>
+            <input
+              type="text"
+              value={cfg.llm_base_url}
+              onChange={(e) => setCfg({ ...cfg, llm_base_url: e.target.value })}
+              onBlur={() => save(cfg)}
+            />
+
+            <label>
+              NGỮ CẢNH &nbsp;
+              {cfg.llm_context_lines === 0
+                ? 'tắt — dịch từng câu rời'
+                : `${cfg.llm_context_lines} câu trước`}
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={5}
+              value={cfg.llm_context_lines}
+              onChange={(e) => setCfg({ ...cfg, llm_context_lines: Number(e.target.value) })}
+              onMouseUp={() => save(cfg)}
+              onKeyUp={() => save(cfg)}
+            />
+            <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
+              Gửi kèm câu trước giúp AI chọn xưng hô nhất quán, đổi lại tốn token và chậm hơn.
+            </div>
+          </div>
+        )}
+
+        <details style={{ marginTop: 12 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12, color: '#cbd5e1' }}>
+            TINH CHỈNH BẮT CHỮ
+          </summary>
+
+          <label>NHỊP QUÉT &nbsp; {cfg.interval_ms} ms</label>
+          <input
+            type="range"
+            min={300}
+            max={3000}
+            step={100}
+            value={cfg.interval_ms}
+            onChange={(e) => setCfg({ ...cfg, interval_ms: Number(e.target.value) })}
+            onMouseUp={() => saveTuning(cfg)}
+            onKeyUp={() => saveTuning(cfg)}
+          />
+
+          <label>ĐỘ DÀI DÒNG TỐI THIỂU &nbsp; {cfg.min_line_len} ký tự</label>
+          <input
+            type="range"
+            min={1}
+            max={12}
+            value={cfg.min_line_len}
+            onChange={(e) => setCfg({ ...cfg, min_line_len: Number(e.target.value) })}
+            onMouseUp={() => saveTuning(cfg)}
+            onKeyUp={() => saveTuning(cfg)}
+          />
+
+          <label>
+            LỌC CHỮ RÁC &nbsp;
+            {cfg.min_clean_ratio === 0 ? 'tắt' : cfg.min_clean_ratio.toFixed(2)}
+          </label>
+          <input
+            type="range"
+            min={0}
+            max={0.95}
+            step={0.05}
+            value={cfg.min_clean_ratio}
+            onChange={(e) => setCfg({ ...cfg, min_clean_ratio: Number(e.target.value) })}
+            onMouseUp={() => saveTuning(cfg)}
+            onKeyUp={() => saveTuning(cfg)}
+          />
+          <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+            Nâng lên nếu còn nghe đọc chữ bịa; hạ xuống nếu câu thật bị bỏ oan.
+          </div>
+        </details>
 
         <label>GIỌNG ĐỌC</label>
         <select
@@ -171,6 +315,7 @@ export default function App() {
         ref={logRef}
         style={{
           flex: 1,
+          minHeight: 90,
           overflowY: 'auto',
           margin: '0 18px 16px',
           padding: 8,
@@ -179,7 +324,15 @@ export default function App() {
           whiteSpace: 'pre-wrap',
         }}
       >
-        {log.join('\n')}
+        {log.map((l, i) => (
+          <div key={i} style={{ marginBottom: 6 }}>
+            {/* bản gốc mờ ở trên: nghe sai thì nhìn là biết lỗi ở OCR hay ở khâu dịch */}
+            {l.src !== l.out && (
+              <div style={{ color: '#6b7280', fontSize: 11 }}>{l.src}</div>
+            )}
+            <div>{l.out}</div>
+          </div>
+        ))}
       </div>
     </div>
   );

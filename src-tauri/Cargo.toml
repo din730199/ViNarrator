@@ -27,9 +27,10 @@ xcap = "0.9"
 # (đo 6 mẫu khó: 0.991 vs 0.625). Không kèm dll/model — chép từ máy người dùng lúc chạy.
 oneocr-rs = "0.3"
 image = "0.25"
-# Dịch EN/ZH -> VI qua endpoint Google (thay deep-translator). blocking: gọi từ worker thread thường.
+# Dịch EN/ZH -> VI: endpoint Google + API LLM OpenAI-compatible. blocking: gọi từ worker thread thường.
 reqwest = { version = "0.12", default-features = false, features = [
   "blocking",
+  "json",
   "rustls-tls",
 ] }
 urlencoding = "2"

@@ -1,25 +1,43 @@
 //! Chụp vùng màn hình -> RGBA bytes (thay mss của bản Python) + tô trắng vùng loại trừ.
 
+use std::cell::RefCell;
+
 use crate::config::Region;
+
+thread_local! {
+    /// (điểm đã tra, gốc màn hình, monitor). `Monitor::from_point` liệt kê lại toàn bộ màn hình
+    /// mỗi lần gọi — vô ích khi vùng quét đứng yên hàng giờ.
+    /// ponytail: khoá theo điểm góc trên-trái; sắp xếp lại màn hình mà vùng quét không đổi thì
+    /// cache vẫn cũ tới lần đổi vùng kế tiếp. Đổi vùng là bấm "SỬA VÙNG QUÉT", đủ để thoát.
+    static MONITOR: RefCell<Option<((i32, i32), (i32, i32), xcap::Monitor)>> = const { RefCell::new(None) };
+}
 
 /// Chụp theo toạ độ màn hình tuyệt đối. Trả (rgba, width, height) đúng thứ tự xcap.
 /// OneOCR nhận thẳng RGBA; nhánh Windows OCR tự hoán R<->B (xem [`crate::ocr`]).
 pub fn grab_rgba(region: &Region) -> Result<(Vec<u8>, u32, u32), String> {
-    let mon = xcap::Monitor::from_point(region.left, region.top).map_err(|e| e.to_string())?;
-    let (mx, my) = (
-        mon.x().map_err(|e| e.to_string())?,
-        mon.y().map_err(|e| e.to_string())?,
-    );
-    let img = mon
-        .capture_region(
-            (region.left - mx).max(0) as u32,
-            (region.top - my).max(0) as u32,
-            region.width,
-            region.height,
-        )
-        .map_err(|e| e.to_string())?;
-    let (w, h) = (img.width(), img.height());
-    Ok((img.into_raw(), w, h))
+    let point = (region.left, region.top);
+    MONITOR.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !matches!(&*cache, Some((p, _, _)) if *p == point) {
+            let mon = xcap::Monitor::from_point(point.0, point.1).map_err(|e| e.to_string())?;
+            let origin = (
+                mon.x().map_err(|e| e.to_string())?,
+                mon.y().map_err(|e| e.to_string())?,
+            );
+            *cache = Some((point, origin, mon));
+        }
+        let (_, (mx, my), mon) = cache.as_ref().expect("vừa gán ở trên");
+        let img = mon
+            .capture_region(
+                (region.left - mx).max(0) as u32,
+                (region.top - my).max(0) as u32,
+                region.width,
+                region.height,
+            )
+            .map_err(|e| e.to_string())?;
+        let (w, h) = (img.width(), img.height());
+        Ok((img.into_raw(), w, h))
+    })
 }
 
 /// Tô trắng vùng loại trừ (toạ độ màn hình) trong ảnh khung quét. Port mask_exclusion của narrator.py.
