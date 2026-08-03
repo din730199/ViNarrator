@@ -28,6 +28,9 @@ pub struct Config {
     /// "en" (Anh->Việt) | "zh" (Trung->Việt). Bản Rust chưa có OCR tiếng Việt nên bỏ "plain".
     pub mode: String,
 
+    /// "oneocr" (mặc định, chính xác hơn — cần Win11 + Snipping Tool) | "windows"
+    /// (Windows.Media.Ocr, nhẹ & nhanh hơn, chạy từ Win10).
+    pub ocr_engine: String,
     pub ocr_language: String,
     /// Bỏ dòng OCR thấp hơn `tỉ lệ × dòng cao nhất` — cắt chữ nhỏ của giao diện (thanh tua,
     /// tiêu đề video) lọt vào khung quét. 0 = tắt. Chỉnh xuống nếu phụ đề bị bỏ sót.
@@ -56,6 +59,7 @@ impl Default for Config {
             min_line_len: 2,
             fuzzy_threshold: 0.82,
             mode: "en".into(),
+            ocr_engine: "oneocr".into(),
             ocr_language: "en-US".into(),
             min_height_ratio: 0.6,
             binarize_threshold: 150,

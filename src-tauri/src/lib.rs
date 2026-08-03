@@ -3,6 +3,7 @@ mod config;
 mod dedup;
 mod narrator;
 mod ocr;
+mod oneocr;
 mod speech_queue;
 mod translate;
 mod tts;
@@ -58,6 +59,13 @@ fn toggle(app: AppHandle, n: tauri::State<Narrator>) -> bool {
 #[tauri::command]
 fn set_mode(n: tauri::State<Narrator>, mode: String) -> Config {
     n.set_mode(&mode);
+    n.config()
+}
+
+/// engine: "oneocr" | "windows". Đổi xong worker dựng lại engine ở vòng lặp kế tiếp.
+#[tauri::command]
+fn set_engine(n: tauri::State<Narrator>, engine: String) -> Config {
+    n.set_engine(engine);
     n.config()
 }
 
@@ -182,6 +190,7 @@ pub fn run() {
             is_running,
             toggle,
             set_mode,
+            set_engine,
             set_voice,
             set_speed,
             set_volume,

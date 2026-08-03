@@ -17,9 +17,9 @@
         "create": false,
         "title": "ViNarrator — Thuyết minh game",
         "width": 460,
-        "height": 660,
+        "height": 720,
         "minWidth": 400,
-        "minHeight": 560,
+        "minHeight": 620,
         "resizable": true
       },
       {
@@ -44,6 +44,11 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

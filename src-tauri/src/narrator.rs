@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter};
 use crate::capture;
 use crate::config::{self, Config, Region};
 use crate::dedup::LineDeduper;
-use crate::ocr::WindowsOcr;
+use crate::ocr::Ocr;
 use crate::translate::Translator;
 use crate::tts::TtsEngine;
 
@@ -90,6 +90,11 @@ impl Narrator {
         self.reload_ocr.store(true, Ordering::Relaxed);
     }
 
+    pub fn set_engine(&self, engine: String) {
+        self.edit(|c| c.ocr_engine = engine.clone());
+        self.reload_ocr.store(true, Ordering::Relaxed);
+    }
+
     pub fn set_voice(&self, name: String) {
         self.edit(|c| c.voice_name = name.clone());
         self.tts.set_params(Some(name), None, None);
@@ -136,7 +141,7 @@ impl Worker {
 
     fn run(self) {
         crate::ensure_com();
-        let mut ocr: Option<WindowsOcr> = None;
+        let mut ocr: Option<Ocr> = None;
         let mut translator = Translator::new(false, "en", "vi");
         let mut deduper = {
             let c = self.cfg.lock().unwrap();
@@ -150,8 +155,14 @@ impl Worker {
             let cfg = self.cfg.lock().unwrap().clone();
 
             if self.reload_ocr.swap(false, Ordering::Relaxed) {
-                self.status("Đang khởi tạo OCR...");
-                match WindowsOcr::new(&cfg.ocr_language) {
+                // Lần đầu chọn OneOCR phải chép ~110MB từ gói Snipping Tool -> báo trước
+                // để người dùng không tưởng app treo.
+                if cfg.ocr_engine != "windows" && !crate::oneocr::runtime_ready() {
+                    self.status("Đang chép engine OneOCR từ Snipping Tool (~110 MB, chỉ lần đầu)...");
+                } else {
+                    self.status("Đang khởi tạo OCR...");
+                }
+                match Ocr::new(&cfg) {
                     Ok(o) => {
                         translator =
                             Translator::new(cfg.translate, &cfg.translate_from, &cfg.translate_to);
@@ -188,20 +199,14 @@ impl Worker {
 
     fn tick(
         &self,
-        engine: &WindowsOcr,
+        engine: &Ocr,
         translator: &Translator,
         deduper: &mut LineDeduper,
         cfg: &Config,
     ) -> Result<(), String> {
-        let (mut bgra, w, h) = capture::grab_bgra(&cfg.region)?;
-        capture::mask_exclusion(&mut bgra, w, h, &cfg.region, cfg.exclude_region.as_ref());
-        let text = engine.recognize_bgra(
-            &bgra,
-            w as i32,
-            h as i32,
-            cfg.min_height_ratio,
-            cfg.binarize_threshold,
-        )?;
+        let (mut rgba, w, h) = capture::grab_rgba(&cfg.region)?;
+        capture::mask_exclusion(&mut rgba, w, h, &cfg.region, cfg.exclude_region.as_ref());
+        let text = engine.recognize_rgba(&rgba, w, h, cfg)?;
         for line in deduper.feed(&text) {
             let spoken = translator.translate(&line);
             *self.last_text.lock().unwrap() = spoken.clone();

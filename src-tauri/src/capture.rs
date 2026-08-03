@@ -1,10 +1,10 @@
-//! Chụp vùng màn hình -> BGRA bytes (thay mss của bản Python) + tô trắng vùng loại trừ.
+//! Chụp vùng màn hình -> RGBA bytes (thay mss của bản Python) + tô trắng vùng loại trừ.
 
 use crate::config::Region;
 
-/// Chụp theo toạ độ màn hình tuyệt đối. Trả (bgra, width, height).
-/// xcap trả RGBA nên phải hoán R<->B cho Windows OCR (BitmapPixelFormat::Bgra8).
-pub fn grab_bgra(region: &Region) -> Result<(Vec<u8>, u32, u32), String> {
+/// Chụp theo toạ độ màn hình tuyệt đối. Trả (rgba, width, height) đúng thứ tự xcap.
+/// OneOCR nhận thẳng RGBA; nhánh Windows OCR tự hoán R<->B (xem [`crate::ocr`]).
+pub fn grab_rgba(region: &Region) -> Result<(Vec<u8>, u32, u32), String> {
     let mon = xcap::Monitor::from_point(region.left, region.top).map_err(|e| e.to_string())?;
     let (mx, my) = (
         mon.x().map_err(|e| e.to_string())?,
@@ -19,14 +19,11 @@ pub fn grab_bgra(region: &Region) -> Result<(Vec<u8>, u32, u32), String> {
         )
         .map_err(|e| e.to_string())?;
     let (w, h) = (img.width(), img.height());
-    let mut buf = img.into_raw();
-    for px in buf.chunks_exact_mut(4) {
-        px.swap(0, 2);
-    }
-    Ok((buf, w, h))
+    Ok((img.into_raw(), w, h))
 }
 
 /// Tô trắng vùng loại trừ (toạ độ màn hình) trong ảnh khung quét. Port mask_exclusion của narrator.py.
+/// Trắng là 255 ở mọi kênh nên hàm này không quan tâm RGBA hay BGRA.
 pub fn mask_exclusion(bgra: &mut [u8], w: u32, h: u32, scan: &Region, exclude: Option<&Region>) {
     let Some(ex) = exclude else { return };
     if bgra.len() != (w as usize) * (h as usize) * 4 {

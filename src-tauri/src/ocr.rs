@@ -1,14 +1,20 @@
-//! OCR qua Windows.Media.Ocr (thay winsdk của bản Python).
+//! Hai engine OCR, chọn được trong giao diện:
 //!
-//! LƯU Ý: Windows OCR KHÔNG hỗ trợ tiếng Việt — chỉ dùng cho chế độ dịch (Anh/Trung -> Việt).
-//! Ngôn ngữ chưa cài gói -> tự lùi về ngôn ngữ hồ sơ người dùng, `info()` báo lại tag thật.
+//! - **OneOCR** (mặc định) — engine của Snipping Tool Win11, xem [`crate::oneocr`].
+//! - **Windows OCR** — `Windows.Media.Ocr`, có sẵn mọi máy Win10+, nhẹ và nhanh hơn.
 //!
-//! Hai cải tiến so với bản Python (đo trên 8 mẫu, xem `cleanliness`):
+//! Cả hai đều KHÔNG đọc tốt tiếng Việt (đo được 0.88 và 0.70) nên chỉ dùng cho chế độ dịch
+//! Anh/Trung -> Việt. Ngôn ngữ chưa cài gói -> Windows OCR lùi về ngôn ngữ hồ sơ người dùng,
+//! `info()` báo lại tag thật.
+//!
+//! Hai cải tiến của nhánh Windows OCR (đo trên 8 mẫu, xem `cleanliness`):
 //!  1. Lọc theo CHIỀU CAO dòng — bỏ chữ nhỏ của giao diện (thanh tua, tiêu đề video) lọt vào
-//!     khung quét. Phụ đề h≈31px, chữ UI h≈9px -> tỉ lệ 0.29, ngưỡng 0.6 tách sạch.
+//!     khung quét. Phụ đề h≈31px, chữ UI h≈9px -> tỉ lệ 0.29, ngưỡng 0.6 tách sạch. OneOCR
+//!     cũng lọc y hệt: confidence KHÔNG dùng được vì chữ rác cũng được đọc đúng (~0.99).
 //!  2. OCR HAI LƯỢT (ảnh gốc + ảnh nhị phân hoá) rồi chọn bản ít ký tự rác hơn. Chữ màu trên
 //!     nền ảnh động (phụ đề video) ảnh gốc đọc sai nặng; nhị phân hoá đọc đúng. Ngược lại chữ
 //!     đen trên nền sáng thì nhị phân hoá phá ảnh — nên phải CHỌN chứ không thay thế.
+//!     OneOCR không cần trò này (tự nó đã 0.99).
 
 use windows::core::HSTRING;
 use windows::Globalization::Language;
@@ -16,9 +22,63 @@ use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
 use windows::Media::Ocr::OcrEngine;
 use windows::Security::Cryptography::CryptographicBuffer;
 
+use crate::config::Config;
+use crate::oneocr::OneOcr;
+
+pub enum Ocr {
+    One(OneOcr),
+    Win(WindowsOcr),
+}
+
+impl Ocr {
+    /// Dựng engine theo cấu hình. Chọn OneOCR mà máy không có Snipping Tool -> tự lùi về
+    /// Windows OCR và kèm lý do trong `info()` (hiện trên thanh trạng thái).
+    pub fn new(cfg: &Config) -> Result<Self, String> {
+        if cfg.ocr_engine != "windows" {
+            match OneOcr::new() {
+                Ok(o) => return Ok(Ocr::One(o)),
+                Err(e) => {
+                    let w = WindowsOcr::new(&cfg.ocr_language)?;
+                    return Ok(Ocr::Win(WindowsOcr { fallback_reason: Some(e), ..w }));
+                }
+            }
+        }
+        Ok(Ocr::Win(WindowsOcr::new(&cfg.ocr_language)?))
+    }
+
+    pub fn info(&self) -> String {
+        match self {
+            Ocr::One(o) => o.info(),
+            Ocr::Win(w) => w.info(),
+        }
+    }
+
+    /// rgba: dữ liệu thô từ [`crate::capture`] (RGBA). Nhánh Windows tự đảo sang BGRA.
+    pub fn recognize_rgba(&self, rgba: &[u8], width: u32, height: u32, cfg: &Config) -> Result<String, String> {
+        match self {
+            Ocr::One(o) => o.recognize_rgba(rgba, width, height, cfg.min_height_ratio),
+            Ocr::Win(w) => {
+                let mut bgra = rgba.to_vec();
+                for px in bgra.chunks_exact_mut(4) {
+                    px.swap(0, 2);
+                }
+                w.recognize_bgra(
+                    &bgra,
+                    width as i32,
+                    height as i32,
+                    cfg.min_height_ratio,
+                    cfg.binarize_threshold,
+                )
+            }
+        }
+    }
+}
+
 pub struct WindowsOcr {
     engine: OcrEngine,
     requested: String,
+    /// Có giá trị khi engine này được dùng vì OneOCR không khả dụng — hiện lý do cho người dùng.
+    fallback_reason: Option<String>,
 }
 
 impl WindowsOcr {
@@ -27,7 +87,7 @@ impl WindowsOcr {
             .and_then(|l| OcrEngine::TryCreateFromLanguage(&l))
             .or_else(|_| OcrEngine::TryCreateFromUserProfileLanguages())
             .map_err(|e| format!("không tạo được OCR engine: {e}"))?;
-        Ok(Self { engine, requested: language_tag.to_string() })
+        Ok(Self { engine, requested: language_tag.to_string(), fallback_reason: None })
     }
 
     /// Tag ngôn ngữ engine thực sự dùng (có thể khác cái yêu cầu nếu chưa cài gói).
@@ -41,10 +101,14 @@ impl WindowsOcr {
 
     pub fn info(&self) -> String {
         let actual = self.actual_language();
-        if actual.eq_ignore_ascii_case(&self.requested) {
+        let base = if actual.eq_ignore_ascii_case(&self.requested) {
             format!("windows({actual})")
         } else {
             format!("windows({actual} — CHƯA CÀI gói {})", self.requested)
+        };
+        match &self.fallback_reason {
+            Some(r) => format!("{base} — không dùng được OneOCR: {r}"),
+            None => base,
         }
     }
 

@@ -21,8 +21,12 @@ serde_json = "1"
 dirs = "5"
 # difflib.SequenceMatcher của Python -> normalized_levenshtein (khác metric, xem dedup.rs).
 strsim = "0.11"
-# Chụp vùng màn hình (thay mss). Trả RgbaImage -> đổi sang BGRA cho Windows OCR.
+# Chụp vùng màn hình (thay mss). Trả RgbaImage — OneOCR dùng thẳng, Windows OCR tự đảo kênh.
 xcap = "0.9"
+# OneOCR: engine của Snipping Tool Win11. Chính xác hơn Windows.Media.Ocr ở ảnh khó
+# (đo 6 mẫu khó: 0.991 vs 0.625). Không kèm dll/model — chép từ máy người dùng lúc chạy.
+oneocr-rs = "0.3"
+image = "0.25"
 # Dịch EN/ZH -> VI qua endpoint Google (thay deep-translator). blocking: gọi từ worker thread thường.
 reqwest = { version = "0.12", default-features = false, features = [
   "blocking",
@@ -33,6 +37,10 @@ urlencoding = "2"
 # Windows-only: OCR + TTS đều là WinRT nên app này chỉ chạy Windows (khai ở [dependencies] cho đúng).
 # Media_Core: cần cho SynthesizeTextToStreamAsync. Win32_Media_Audio: PlaySoundW (thay winsound).
 windows = { version = "0.62", features = [
+  # ApplicationModel + Management_Deployment: hỏi vị trí gói Snipping Tool. Bắt buộc phải qua
+  # PackageManager vì user thường KHÔNG liệt kê được C:\Program Files\WindowsApps (Access denied).
+  "ApplicationModel",
+  "Management_Deployment",
   "Foundation",
   "Globalization",
   "Graphics_Imaging",

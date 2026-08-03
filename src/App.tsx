@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Config, MODES, Voice } from './types';
+import { Config, ENGINES, MODES, Voice } from './types';
 
 const PURPLE = '#7c3aed';
 const RED = '#b91c1c';
@@ -96,6 +96,20 @@ export default function App() {
           {MODES.map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
+            </option>
+          ))}
+        </select>
+
+        <label>ENGINE OCR</label>
+        <select
+          value={cfg.ocr_engine}
+          onChange={(e) =>
+            void invoke<Config>('set_engine', { engine: e.target.value }).then(setCfg)
+          }
+        >
+          {ENGINES.map((e) => (
+            <option key={e.value} value={e.value}>
+              {e.label}
             </option>
           ))}
         </select>

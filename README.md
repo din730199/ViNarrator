@@ -34,25 +34,54 @@ Installer ~2.8 MB, exe ~11 MB.
 Cấu hình lưu ở `%APPDATA%\ViNarrator\config.json` (giữ nguyên tên field của bản Python
 nên `config.json` cũ copy sang vẫn đọc được).
 
+### Engine OCR
+
+Chọn trong giao diện (**ENGINE OCR**), đo bằng độ giống ground truth (0–1):
+
+| | 8 mẫu dễ | 6 mẫu khó¹ | 3 mẫu tiếng Việt | ms/khung |
+|---|---|---|---|---|
+| **OneOCR** (mặc định) | 1.000 | **0.991** | **0.881** | ~70 |
+| Windows OCR | 1.000 | 0.625 | 0.702 | ~20 |
+
+¹ chữ 9px trên nhiễu, tương phản cực thấp, font nghiêng serif, nền tần số cao, chữ mờ trên nền sáng.
+
+**OneOCR** là engine của Snipping Tool Win11. Ba file `oneocr.dll`, `oneocr.onemodel`,
+`onnxruntime.dll` (~110 MB) thuộc Microsoft nên **không** đóng gói kèm — app tự chép từ gói
+Snipping Tool trên máy vào cạnh exe ở lần chạy đầu (mất ~0.2s). Máy không có Snipping Tool
+hoặc chạy Win10 → tự lùi về Windows OCR, lý do hiện ở thanh trạng thái.
+
+Hai chi tiết kỹ thuật đáng nhớ:
+- `build.rs` ép `/DELAYLOAD:oneocr.dll`. Không có nó, import tĩnh của `oneocr-rs` làm app chết
+  ngay lúc nạp (`STATUS_DLL_NOT_FOUND`) trước khi kịp chạy code chép file.
+- Phải hỏi vị trí gói qua WinRT `PackageManager`; user thường **không** liệt kê được
+  `C:\Program Files\WindowsApps` (Access denied), dù đọc file theo đường dẫn chính xác thì được.
+- `installMode` để `currentUser` (cài vào `%LOCALAPPDATA%`) nên chép file không cần quyền admin.
+  Đổi sang `perMachine` sẽ làm OneOCR không dùng được.
+
 ### Chỉnh độ chính xác OCR
 
 Hai knob trong `config.json`, sửa khi phụ đề bị bỏ sót hoặc lẫn chữ rác:
 
 | Field | Mặc định | Ý nghĩa |
 |---|---|---|
-| `min_height_ratio` | `0.6` | Bỏ dòng thấp hơn `tỉ lệ × dòng cao nhất` trong khung. Cắt chữ nhỏ của giao diện (thanh tua, tiêu đề video). Đặt `0` để tắt. |
-| `binarize_threshold` | `150` | Ngưỡng cho lượt OCR nhị phân hoá (`max(R,G,B) ≥ ngưỡng` = chữ). Hạ xuống nếu phụ đề mờ/xám; nâng lên nếu nền sáng bị nhận nhầm. |
+| `min_height_ratio` | `0.6` | Bỏ dòng thấp hơn `tỉ lệ × dòng cao nhất` trong khung. Cắt chữ nhỏ của giao diện (thanh tua, tiêu đề video). Đặt `0` để tắt. Áp cho cả hai engine. |
+| `binarize_threshold` | `150` | Chỉ dùng cho Windows OCR: ngưỡng cho lượt OCR nhị phân hoá (`max(R,G,B) ≥ ngưỡng` = chữ). Hạ xuống nếu phụ đề mờ/xám; nâng lên nếu nền sáng bị nhận nhầm. |
 
-Mỗi khung được OCR **hai lượt** — ảnh gốc và ảnh nhị phân hoá — rồi lấy bản ít ký tự rác hơn.
-Đo trên 8 mẫu (chữ nhỏ/lớn, nền tối/sáng, phụ đề màu trên nền ảnh động): chỉ dùng ảnh gốc
-đạt trung bình 0.922 và tệ nhất 0.375; hai lượt + chọn đạt **1.000 ở cả 8 mẫu**.
+Nhánh Windows OCR chạy **hai lượt** — ảnh gốc và ảnh nhị phân hoá — rồi lấy bản ít ký tự rác hơn:
+chỉ ảnh gốc đạt trung bình 0.922 / tệ nhất 0.375 trên 8 mẫu dễ, hai lượt đạt 1.000 cả 8.
+OneOCR không cần trò này.
+
+Confidence của OneOCR **không** dùng để lọc rác được: chữ nhỏ của giao diện cũng được đọc đúng
+(~0.99) trong khi tiếng Việt đọc đúng lại chỉ 0.72 — hai dải chồng nhau. Lọc theo chiều cao dòng
+mới là cái phân biệt được.
 
 ## Kiến trúc
 
 | File | Vai trò | Port từ (bản Python) |
 |------|---------|------------------------|
 | `src-tauri/src/capture.rs` | chụp vùng màn hình BGRA + tô trắng vùng loại trừ | `capture.py`, `mask_exclusion` |
-| `src-tauri/src/ocr.rs` | `Windows.Media.Ocr` | `ocr.py` (winsdk) |
+| `src-tauri/src/ocr.rs` | chọn engine + `Windows.Media.Ocr` | `ocr.py` (winsdk) |
+| `src-tauri/src/oneocr.rs` | OneOCR (Snipping Tool) + tự chép runtime | — (mới) |
 | `src-tauri/src/translate.rs` | Google Translate qua `reqwest` | `translate.py` (deep-translator) |
 | `src-tauri/src/tts.rs` | `Windows.Media.SpeechSynthesis` + `PlaySound` | `tts.py` (winsdk + winsound) |
 | `src-tauri/src/dedup.rs` | chống đọc trùng phụ đề cuộn | `dedup.py` |
