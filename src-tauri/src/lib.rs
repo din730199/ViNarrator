@@ -1,0 +1,194 @@
+mod capture;
+mod config;
+mod dedup;
+mod narrator;
+mod ocr;
+mod speech_queue;
+mod translate;
+mod tts;
+
+use std::cell::Cell;
+
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WindowEvent};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+
+use config::{Config, Region};
+use narrator::Narrator;
+
+thread_local! {
+    static COM_INIT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// WinRT (OCR/TTS) đòi thread đã khởi tạo COM. Gọi đầu mỗi thread chạm WinRT — MTA, không uninit
+/// (giữ apartment sống suốt đời thread; uninit sớm sẽ làm hỏng object đang cầm).
+pub(crate) fn ensure_com() {
+    COM_INIT.with(|done| {
+        if !done.get() {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+            done.set(true);
+        }
+    });
+}
+
+#[tauri::command]
+fn get_config(n: tauri::State<Narrator>) -> Config {
+    n.config()
+}
+
+/// async = chạy ngoài main thread. Liệt kê giọng WinRT lần đầu tốn cả giây; để sync sẽ chặn
+/// luồng UI và cửa sổ kẹt ở "Đang tải…" cho tới khi xong.
+#[tauri::command]
+async fn list_voices() -> Vec<tts::Voice> {
+    tts::list_voices()
+}
+
+#[tauri::command]
+fn is_running(n: tauri::State<Narrator>) -> bool {
+    n.running()
+}
+
+#[tauri::command]
+fn toggle(app: AppHandle, n: tauri::State<Narrator>) -> bool {
+    emit_running(&app, n.toggle())
+}
+
+#[tauri::command]
+fn set_mode(n: tauri::State<Narrator>, mode: String) -> Config {
+    n.set_mode(&mode);
+    n.config()
+}
+
+#[tauri::command]
+fn set_voice(n: tauri::State<Narrator>, name: String) {
+    n.set_voice(name);
+}
+
+#[tauri::command]
+fn set_speed(n: tauri::State<Narrator>, speed: f64) {
+    n.set_speed(speed);
+}
+
+#[tauri::command]
+fn set_volume(n: tauri::State<Narrator>, volume: u8) {
+    n.set_volume(volume);
+}
+
+/// Mở overlay kéo chọn vùng. kind: "scan" (vùng quét) | "exclude" (vùng loại trừ).
+#[tauri::command]
+fn pick_region(app: AppHandle, kind: String) -> Result<(), String> {
+    let overlay = app
+        .get_webview_window("overlay")
+        .ok_or("không có cửa sổ overlay")?;
+    // Phủ đúng màn hình chính (giống overlay fullscreen của tkinter).
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let _ = overlay.set_position(PhysicalPosition::new(m.position().x, m.position().y));
+        let _ = overlay.set_size(PhysicalSize::new(m.size().width, m.size().height));
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide(); // ẩn cửa sổ chính để chọn được vùng nằm dưới nó
+    }
+    overlay.show().map_err(|e| e.to_string())?;
+    let _ = overlay.set_always_on_top(true);
+    let _ = overlay.set_focus();
+    let _ = app.emit_to("overlay", "pick_start", kind);
+    Ok(())
+}
+
+/// Overlay gọi lại khi kéo xong (region = None nếu bấm Esc).
+/// Command này chạy từ cửa sổ overlay nên giá trị trả về KHÔNG tới được cửa sổ chính —
+/// phải emit "config" thì UI chính mới hiện vùng mới.
+#[tauri::command]
+fn region_picked(app: AppHandle, n: tauri::State<Narrator>, kind: String, region: Option<Region>) {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.hide();
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+    if let Some(r) = region {
+        if kind == "exclude" {
+            n.set_exclude(Some(r));
+        } else {
+            n.set_region(r);
+        }
+        let _ = app.emit("config", n.config());
+    }
+}
+
+/// Xoá vùng loại trừ (quét lại toàn khung).
+#[tauri::command]
+fn clear_exclude(n: tauri::State<Narrator>) -> Config {
+    n.set_exclude(None);
+    n.config()
+}
+
+fn emit_running(app: &AppHandle, on: bool) -> bool {
+    let _ = app.emit("running", on);
+    on
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            app.manage(Narrator::new(handle.clone(), config::load()));
+
+            // Tauri tạo cửa sổ khai trong config TRƯỚC khi chạy setup -> webview có thể gọi
+            // get_config lúc Narrator chưa manage => "state not managed", UI kẹt ở "Đang tải…".
+            // Nên đặt "create": false rồi tự dựng cửa sổ Ở ĐÂY, sau khi state đã sẵn sàng.
+            let window_configs = app.config().app.windows.clone();
+            for wc in &window_configs {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), wc)?.build()?;
+            }
+
+            // Hotkey toàn cục như bản headless: Ctrl+Alt+S bật/tắt, Ctrl+Alt+R đọc lại.
+            // Đăng ký RIÊNG từng phím: gộp một lần thì một phím bị app khác chiếm sẽ làm hỏng cả hai.
+            // Lỗi KHÔNG chặn app — vẫn dùng được nút trên UI.
+            let gs = app.global_shortcut();
+            let toggle_key = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyS);
+            let reread_key = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyR);
+            if let Err(e) = gs.on_shortcut(toggle_key, |app, _, event| {
+                if event.state() == ShortcutState::Pressed {
+                    emit_running(app, app.state::<Narrator>().toggle());
+                }
+            }) {
+                eprintln!("[hotkey] Ctrl+Alt+S không đăng ký được: {e}");
+            }
+            if let Err(e) = gs.on_shortcut(reread_key, |app, _, event| {
+                if event.state() == ShortcutState::Pressed {
+                    app.state::<Narrator>().reread();
+                }
+            }) {
+                eprintln!("[hotkey] Ctrl+Alt+R không đăng ký được: {e}");
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Overlay luôn tồn tại (ẩn) nên đóng cửa sổ chính KHÔNG tự thoát app -> thoát tay.
+            if window.label() == "main" && matches!(event, WindowEvent::CloseRequested { .. }) {
+                window.app_handle().state::<Narrator>().shutdown();
+                window.app_handle().exit(0);
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_config,
+            list_voices,
+            is_running,
+            toggle,
+            set_mode,
+            set_voice,
+            set_speed,
+            set_volume,
+            pick_region,
+            region_picked,
+            clear_exclude
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

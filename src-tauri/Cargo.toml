@@ -1,0 +1,46 @@
+[package]
+name = "vinarrator"
+version = "0.1.0"
+description = "ViNarrator — thuyết minh game tiếng Việt"
+authors = ["ViNarrator"]
+edition = "2021"
+rust-version = "1.82"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+# difflib.SequenceMatcher của Python -> normalized_levenshtein (khác metric, xem dedup.rs).
+strsim = "0.11"
+# Chụp vùng màn hình (thay mss). Trả RgbaImage -> đổi sang BGRA cho Windows OCR.
+xcap = "0.9"
+# Dịch EN/ZH -> VI qua endpoint Google (thay deep-translator). blocking: gọi từ worker thread thường.
+reqwest = { version = "0.12", default-features = false, features = [
+  "blocking",
+  "rustls-tls",
+] }
+urlencoding = "2"
+
+# Windows-only: OCR + TTS đều là WinRT nên app này chỉ chạy Windows (khai ở [dependencies] cho đúng).
+# Media_Core: cần cho SynthesizeTextToStreamAsync. Win32_Media_Audio: PlaySoundW (thay winsound).
+windows = { version = "0.62", features = [
+  "Foundation",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media_Core",
+  "Media_Ocr",
+  "Media_SpeechSynthesis",
+  "Security_Cryptography",
+  "Storage_Streams",
+  "Win32_Media_Audio",
+  "Win32_System_Com",
+] }

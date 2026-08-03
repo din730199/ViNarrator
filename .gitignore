@@ -1,0 +1,15 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Model TTS (~208MB, tai lai duoc tu HuggingFace — xem README). model.safetensors 145MB
+# vuot gioi han 100MB cua GitHub nen khong bao gio commit vao day.
+models/
+
+# Python (bản cũ)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+vinarrator.log

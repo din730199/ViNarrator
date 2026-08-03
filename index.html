@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>ViNarrator — Thuyết minh game</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <style>
+      body {
+        margin: 0;
+        background: #1a1a1a;
+        color: #e5e7eb;
+        font: 14px 'Segoe UI', system-ui, sans-serif;
+      }
+      button {
+        border: none;
+        border-radius: 6px;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        padding: 9px 12px;
+        cursor: pointer;
+      }
+      button:hover {
+        filter: brightness(1.15);
+      }
+      select {
+        width: 100%;
+        background: #7c3aed;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        padding: 8px;
+        font: inherit;
+        cursor: pointer;
+      }
+      input[type='range'] {
+        width: 100%;
+        accent-color: #7c3aed;
+      }
+      label {
+        display: block;
+        margin: 12px 0 4px;
+        font-size: 12px;
+        letter-spacing: 0.4px;
+        color: #cbd5e1;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main-entry.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "name": "vinarrator",
+  "version": "0.1.0",
+  "description": "ViNarrator — thuyết minh game tiếng Việt (Tauri + React + Rust)",
+  "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "vite:dev": "vite",
+    "vite:build": "vite build",
+    "dev": "cargo tauri dev",
+    "build": "cargo tauri build",
+    "typecheck": "tsc --noEmit",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-global-shortcut": "^2"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6"
+  }
+}
