@@ -18,7 +18,7 @@ Kiến trúc bám theo RiTaiAI: logic nặng ở Rust (`src-tauri/src`), UI Reac
 yarn install
 yarn dev      # cargo tauri dev
 yarn build    # cargo tauri build -> src-tauri/target/release/bundle/nsis/*-setup.exe
-yarn test     # cargo test (24 unit test)
+yarn test     # cargo test (26 unit test)
 ```
 
 Installer ~2.8 MB, exe ~11 MB.
@@ -49,7 +49,7 @@ Mỗi khung được OCR **hai lượt** — ảnh gốc và ảnh nhị phân h
 
 ## Kiến trúc
 
-| File | Vai trò | Thay cho (bản Python) |
+| File | Vai trò | Port từ (bản Python) |
 |------|---------|------------------------|
 | `src-tauri/src/capture.rs` | chụp vùng màn hình BGRA + tô trắng vùng loại trừ | `capture.py`, `mask_exclusion` |
 | `src-tauri/src/ocr.rs` | `Windows.Media.Ocr` | `ocr.py` (winsdk) |
@@ -63,17 +63,29 @@ Mỗi khung được OCR **hai lượt** — ảnh gốc và ảnh nhị phân h
 | `src/overlay/Overlay.tsx` | overlay kéo chọn vùng | `region_select.py` |
 
 Unit test của bản Python (`tests/test_dedup.py`, `tests/test_speech_queue.py`) đã port nguyên
-sang Rust và đều pass — dùng để kiểm chứng bản port.
+sang Rust và đều pass — dùng để kiểm chứng bản port. Cột "port từ" trỏ tới file của bản Python,
+xem được ở commit `64e09eb`.
 
-## Khác biệt so với bản Python
+## Bản Python cũ
 
-Bỏ (kéo theo PyTorch vài GB, không có tương đương thuần Rust):
+Đã xoá khỏi cây làm việc. Cần đối chiếu thì lấy từ git:
 
-- **Chế độ "Đọc thuần" (OCR tiếng Việt bằng EasyOCR)** — Windows OCR không hỗ trợ tiếng Việt.
-  Muốn có lại: nhúng PaddleOCR ONNX qua crate `ort`.
-- **Giọng Piper** (`models/vi_VN-vais1000-medium.onnx`) — crate `piper-rs` kéo theo `espeak-rs-sys`,
-  build cần **LLVM/libclang**. Cài `winget install LLVM.LLVM` rồi mới thêm được.
-- **Giọng MMS** (`models/mms-tts-vie`) — đang là safetensors + torch; muốn chạy bằng `ort`
-  phải export ONNX một lần rồi tự viết tokenizer ký tự từ `vocab.json`.
+```bash
+git show 64e09eb:gui.py          # xem 1 file
+git checkout 64e09eb -- narrator.py ocr.py tts.py   # lấy lại vài file
+```
 
-Mã Python cũ vẫn còn trong repo (`*.py`, `models/`) để đối chiếu; xoá được khi không cần nữa.
+Ba thứ của bản Python **chưa có** ở bản Rust (đều kéo theo PyTorch vài GB nên bỏ):
+
+| Bỏ | Vì sao | Muốn có lại |
+|---|---|---|
+| Chế độ "Đọc thuần" (OCR tiếng Việt, EasyOCR) | Windows OCR không hỗ trợ tiếng Việt | nhúng PaddleOCR ONNX qua crate `ort` |
+| Giọng Piper | `piper-rs` → `espeak-rs-sys`, build cần LLVM/libclang | `winget install LLVM.LLVM` rồi thêm crate |
+| Giọng MMS | đang là safetensors + torch | export ONNX một lần + viết tokenizer ký tự từ `vocab.json` |
+
+Thư mục `models/` (~200 MB) cũng đã xoá và nằm trong `.gitignore` — `model.safetensors` 145 MB
+vượt giới hạn 100 MB của GitHub. Tải lại khi cần:
+
+- Piper `vi_VN-vais1000-medium.onnx` (+ `.onnx.json`) —
+  [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main/vi/vi_VN)
+- MMS `mms-tts-vie` — [Xenova/mms-tts-vie](https://huggingface.co/Xenova/mms-tts-vie)
