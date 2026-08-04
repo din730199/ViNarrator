@@ -18,7 +18,7 @@ Kiến trúc bám theo RiTaiAI: logic nặng ở Rust (`src-tauri/src`), UI Reac
 yarn install
 yarn dev      # cargo tauri dev
 yarn build    # cargo tauri build -> src-tauri/target/release/bundle/nsis/*-setup.exe
-yarn test     # cargo test (39 unit test)
+yarn test     # cargo test (44 unit test)
 ```
 
 Installer ~2.8 MB, exe ~11 MB.
@@ -99,8 +99,9 @@ Ba knob đầu chỉnh ngay trong giao diện (**TINH CHỈNH BẮT CHỮ**), ph
 | Field | Mặc định | Ý nghĩa |
 |---|---|---|
 | `min_clean_ratio` | `0.6` | Bỏ dòng có điểm "sạch" chuẩn hoá dưới ngưỡng — chặn chữ OCR bịa. Nâng nếu còn nghe đọc rác, hạ (hoặc `0` để tắt) nếu câu thật bị bỏ oan. |
-| `min_line_len` | `4` | Bỏ dòng ngắn hơn ngần này ký tự. |
+| `min_line_len` | `3` | Bỏ dòng ngắn hơn ngần này ký tự. Đừng lên 4: `Yes`, `No!`, `Go!`, `Run` đều đúng 3 ký tự. |
 | `interval_ms` | `1200` | Nhịp quét. |
+| `fuzzy_threshold` | `0.97` | Hai dòng giống nhau tới mức này thì bỏ dòng sau. **Đo được**, xem dưới. |
 | `min_height_ratio` | `0.6` | Bỏ dòng thấp hơn `tỉ lệ × dòng cao nhất` trong khung. Cắt chữ nhỏ của giao diện (thanh tua, tiêu đề video). Đặt `0` để tắt. Áp cho cả hai engine. |
 | `binarize_threshold` | `150` | Chỉ dùng cho Windows OCR: ngưỡng cho lượt OCR nhị phân hoá (`max(R,G,B) ≥ ngưỡng` = chữ). Hạ xuống nếu phụ đề mờ/xám; nâng lên nếu nền sáng bị nhận nhầm. |
 
@@ -110,7 +111,39 @@ chắc chắn là OCR bịa). Dấu câu thường bị loại khỏi cả tử 
 Đo thật: `' oanqCảaTôi Phả Server Minecraft Bi Bo H` được 0.50, câu đọc đúng được 1.00.
 Chế độ Trung tắt luật chữ có dấu vì chữ Hán vốn ngoài ASCII.
 
+Hai luật này **chồng lấn nhau**, biết ranh giới thì đỡ chỉnh nhầm: `min_clean_ratio` đã dọn sạch
+rác dấu câu (`.` `-` `|` `'` `..` `•`), nên việc còn lại của `min_line_len` chỉ là mảnh **chữ cái**
+1–2 ký tự (`o`, `ll`, `at`, `l1`). Vì vậy `3` là trần hợp lý — lên `4` là bắt đầu nuốt thoại thật.
+
 Log hiện **cả bản gốc (mờ) lẫn bản dịch** — nghe sai thì nhìn là biết lỗi ở OCR hay ở khâu dịch.
+
+### Ngưỡng chống đọc trùng — đo, không đoán
+
+`fuzzy_threshold` từng là `0.82`, thừa hưởng từ bản Python dùng `difflib.SequenceMatcher`
+(Ratcliff-Obershelp) rồi bê nguyên sang bản Rust dùng `normalized_levenshtein` — **hai metric
+khác nhau, chưa hề đo lại**.
+
+Đo trên 60 ảnh phụ đề xuống cấp (10 câu × 6 kiểu: chữ 9px trên nhiễu, tương phản cực thấp,
+serif nghiêng, nền tần số cao, chữ mờ trên nền sáng), chạy qua `LineDeduper` thật:
+
+| ngưỡng | đọc lặp (OneOCR) | mất câu thoại¹ |
+|---|---|---|
+| 0.82 (cũ) | 0 | **8/8** |
+| 0.92 | 0 | 5/8 |
+| 0.95 | 0 | 3/8 |
+| **0.97 (nay)** | 1 | **0/8** |
+
+¹ cặp thoại chỉ khác một từ — `"...touch that lever"` vs `"...that button"` (0.829),
+`"more iron"` vs `"more gold"` (0.905), `"forty hours"` vs `"fifty hours"` (0.953).
+
+Tức là ngưỡng cũ **sai theo chiều ngược với dự đoán**: không phải quá lỏng mà quá **gắt** —
+nó nuốt sạch thoại gần giống nhau. Đổi lại chỉ được 0 lần đọc lặp.
+
+Giới hạn thật của cách này: OCR đọc lệch giữa câu (`hits`→`bits`, 0.951) và thoại khác một từ
+(`base`→`gate`, 0.950) **có điểm gần như nhau — không metric nào tách được**. Nên chọn ngưỡng
+nghiêng về phía ĐỌC: nghe lặp một câu thì bực, mất một câu thì không lấy lại được.
+
+`config.json` cũ ghi đúng `0.82` sẽ tự nâng lên khi nạp; ai tự chỉnh số khác thì giữ nguyên.
 
 Nhánh Windows OCR chạy **hai lượt** — ảnh gốc và ảnh nhị phân hoá — rồi lấy bản ít ký tự rác hơn:
 chỉ ảnh gốc đạt trung bình 0.922 / tệ nhất 0.375 trên 8 mẫu dễ, hai lượt đạt 1.000 cả 8.

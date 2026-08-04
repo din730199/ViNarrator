@@ -149,6 +149,20 @@ mod tests {
         assert!(d.feed("một   đêm   nọ").is_empty());
     }
 
+    /// Ranh giới 3 là có chủ đích: bỏ mảnh chữ 1-2 ký tự nhưng GIỮ thoại 3 ký tự.
+    /// (Rác dấu câu đã bị `ocr::drop_junk_lines` chặn từ trước, không tới đây.)
+    #[test]
+    fn do_dai_toi_thieu_mac_dinh_giu_duoc_thoai_ngan() {
+        let n = crate::config::Config::default().min_line_len;
+        let mut d = LineDeduper::new(false, n, 0.97);
+        for real in ["Yes", "No!", "Go!", "Run", "Hey"] {
+            assert_eq!(d.feed(real).len(), 1, "thoại thật bị bỏ: {real}");
+        }
+        // mảnh vụn OCR mà bộ lọc chữ rác không bắt được (toàn chữ cái) thì luật này bắt
+        let mut d = LineDeduper::new(false, n, 0.97);
+        assert!(d.feed("ll\no\nat").is_empty());
+    }
+
     #[test]
     fn min_len_filters_noise() {
         let mut d = LineDeduper::new(false, 3, 0.82);
@@ -187,6 +201,37 @@ mod tests {
         let mut d = d(false);
         d.feed("một đêm nọ silvermane bo cho tôi");
         assert!(d.feed("một đêm nọ silvermane bo cho tôi nhé").is_empty());
+    }
+
+    /// Khoá lại kết quả ĐO ĐƯỢC (60 ảnh phụ đề xuống cấp, xem README): ngưỡng 0.82 cũ nuốt
+    /// mất câu thoại chỉ khác một từ — thứ tệ hơn nhiều so với đọc lặp.
+    #[test]
+    fn nguong_mac_dinh_khong_nuot_thoai_khac_mot_tu() {
+        let default_t = crate::config::Config::default().fuzzy_threshold;
+        let pairs = [
+            ("i told you not to touch that lever", "i told you not to touch that button"),
+            ("we need more iron before we can craft this", "we need more gold before we can craft this"),
+            ("the boss spawns when the timer hits zero", "the boss despawns when the timer hits zero"),
+            ("let us regroup at the base and try again", "let us regroup at the gate and try again"),
+        ];
+        for (a, b) in pairs {
+            let mut d = LineDeduper::new(false, 4, default_t);
+            assert_eq!(d.feed(a).len(), 1, "{a}");
+            assert_eq!(d.feed(b).len(), 1, "câu thứ hai bị nuốt: {b}");
+            // và đúng những cặp này bị nuốt ở ngưỡng cũ -> đó là lý do đổi
+            let mut old = LineDeduper::new(false, 4, 0.82);
+            old.feed(a);
+            assert!(old.feed(b).is_empty(), "ngưỡng 0.82 lẽ ra phải nuốt: {b}");
+        }
+    }
+
+    #[test]
+    fn fuzzy_van_bat_duoc_ocr_lech_mot_ky_tu() {
+        let default_t = crate::config::Config::default().fuzzy_threshold;
+        let mut d = LineDeduper::new(false, 4, default_t);
+        // OCR đọc "0" thành "o" giữa câu: không phải chuỗi con, chỉ fuzzy mới bắt được
+        d.feed("the b0ss spawns when the timer hits zero at midnight");
+        assert!(d.feed("the boss spawns when the timer hits zero at midnight").is_empty());
     }
 
     #[test]

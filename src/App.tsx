@@ -65,6 +65,7 @@ export default function App() {
       intervalMs: c.interval_ms,
       minLineLen: c.min_line_len,
       minCleanRatio: c.min_clean_ratio,
+      fuzzyThreshold: c.fuzzy_threshold,
     }).then(setCfg);
 
   return (
@@ -258,6 +259,22 @@ export default function App() {
           />
           <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
             Nâng lên nếu còn nghe đọc chữ bịa; hạ xuống nếu câu thật bị bỏ oan.
+          </div>
+
+          <label>CHỐNG ĐỌC TRÙNG &nbsp; {cfg.fuzzy_threshold.toFixed(2)}</label>
+          <input
+            type="range"
+            min={0.5}
+            max={1}
+            step={0.01}
+            value={cfg.fuzzy_threshold}
+            onChange={(e) => setCfg({ ...cfg, fuzzy_threshold: Number(e.target.value) })}
+            onMouseUp={() => saveTuning(cfg)}
+            onKeyUp={() => saveTuning(cfg)}
+          />
+          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
+            Hai dòng giống nhau tới mức này thì bỏ dòng sau. Hạ xuống sẽ nuốt mất câu thoại chỉ
+            khác một từ — đo được 0.82 nuốt 8/8 cặp như vậy.
           </div>
         </details>
 

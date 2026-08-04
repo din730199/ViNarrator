@@ -23,6 +23,8 @@ pub struct Config {
     // Chống đọc trùng phụ đề cuộn
     pub dedup_require_stable: bool,
     pub min_line_len: usize,
+    /// Hai dòng giống nhau tới mức này (0..1) thì coi là trùng, không đọc lại.
+    /// **Đo được** trên 60 ảnh phụ đề xuống cấp: xem `LEGACY_FUZZY` và README.
     pub fuzzy_threshold: f64,
 
     /// "en" (Anh->Việt) | "zh" (Trung->Việt). Bản Rust chưa có OCR tiếng Việt nên bỏ "plain".
@@ -71,9 +73,11 @@ impl Default for Config {
             exclude_region: None,
             interval_ms: 1200,
             dedup_require_stable: true,
-            // 4 chứ không phải 2: dòng 2 ký tự gần như luôn là mảnh vụn OCR, không phải thoại.
-            min_line_len: 4,
-            fuzzy_threshold: 0.82,
+            // 3, không phải 4: rác dấu câu (".", "-", "|", "•") đã bị `min_clean_ratio` dọn,
+            // phần còn lại chỉ là mảnh chữ 1-2 ký tự ("o", "ll", "at"). Lên 4 sẽ nuốt luôn
+            // thoại thật đúng 3 ký tự: "Yes", "No!", "Go!", "Run".
+            min_line_len: 3,
+            fuzzy_threshold: 0.97,
             mode: "en".into(),
             ocr_engine: "oneocr".into(),
             ocr_language: "en-US".into(),
@@ -118,6 +122,19 @@ impl Config {
     }
 }
 
+/// Ngưỡng cũ, thừa hưởng từ bản Python (`difflib.SequenceMatcher`) rồi bê nguyên sang bản Rust
+/// (`normalized_levenshtein`) mà chưa hề đo. Đo lại trên 60 ảnh phụ đề xuống cấp thì nó **nuốt
+/// 8/8 cặp thoại chỉ khác một từ** ("...touch that lever" vs "...that button" = 0.829), tức là
+/// mất hẳn câu thoại. Đổi lấy 0 lần đọc lặp — một cái giá quá đắt.
+/// Chỉ nâng đúng giá trị mặc định cũ này: ai tự chỉnh số khác thì giữ nguyên.
+const LEGACY_FUZZY: f64 = 0.82;
+
+fn migrate(c: &mut Config) {
+    if c.fuzzy_threshold == LEGACY_FUZZY {
+        c.fuzzy_threshold = Config::default().fuzzy_threshold;
+    }
+}
+
 pub fn path() -> PathBuf {
     let dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     dir.join("ViNarrator").join("config.json")
@@ -130,6 +147,7 @@ pub fn load() -> Config {
             // config.json cũ có mode "translated"/"plain" -> chuẩn hoá về en/zh.
             let m = c.mode.clone();
             c.apply_mode(&m);
+            migrate(&mut c);
             c
         }
         None => Config::default(),
@@ -174,4 +192,17 @@ mod tests {
         assert_eq!(c.interval_ms, 1200);
         assert_eq!(c.min_clean_ratio, 0.6);
     }
+
+    #[test]
+    fn nguong_fuzzy_cu_duoc_nang_len() {
+        // đúng giá trị mặc định cũ -> nâng
+        let mut c = Config { fuzzy_threshold: LEGACY_FUZZY, ..Config::default() };
+        migrate(&mut c);
+        assert_eq!(c.fuzzy_threshold, Config::default().fuzzy_threshold);
+        // người dùng tự chỉnh số khác -> KHÔNG đụng vào
+        let mut c = Config { fuzzy_threshold: 0.7, ..Config::default() };
+        migrate(&mut c);
+        assert_eq!(c.fuzzy_threshold, 0.7);
+    }
 }
+

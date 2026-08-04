@@ -89,8 +89,9 @@ fn set_tuning(
     interval_ms: u64,
     min_line_len: usize,
     min_clean_ratio: f32,
+    fuzzy_threshold: f64,
 ) -> Config {
-    n.set_tuning(interval_ms, min_line_len, min_clean_ratio);
+    n.set_tuning(interval_ms, min_line_len, min_clean_ratio, fuzzy_threshold);
     n.config()
 }
 

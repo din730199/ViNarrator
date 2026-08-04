@@ -130,14 +130,22 @@ impl Narrator {
         self.reload.translate.store(true, Ordering::Relaxed);
     }
 
-    /// Ba knob tinh chỉnh trước đây chỉ sửa được bằng tay trong config.json.
-    pub fn set_tuning(&self, interval_ms: u64, min_line_len: usize, min_clean_ratio: f32) {
+    /// Các knob tinh chỉnh trước đây chỉ sửa được bằng tay trong config.json.
+    pub fn set_tuning(
+        &self,
+        interval_ms: u64,
+        min_line_len: usize,
+        min_clean_ratio: f32,
+        fuzzy_threshold: f64,
+    ) {
         self.edit(|c| {
             c.interval_ms = interval_ms.clamp(200, 5000);
             c.min_line_len = min_line_len.clamp(1, 20);
             c.min_clean_ratio = min_clean_ratio.clamp(0.0, 1.0);
+            c.fuzzy_threshold = fuzzy_threshold.clamp(0.5, 1.0);
         });
-        // interval_ms và min_clean_ratio đọc thẳng từ cfg mỗi vòng; chỉ min_line_len cần dựng lại.
+        // interval_ms và min_clean_ratio đọc thẳng từ cfg mỗi vòng; min_line_len và
+        // fuzzy_threshold nằm trong deduper nên phải dựng lại.
         self.reload.dedup.store(true, Ordering::Relaxed);
     }
 
