@@ -18,7 +18,7 @@ Kiến trúc bám theo RiTaiAI: logic nặng ở Rust (`src-tauri/src`), UI Reac
 yarn install
 yarn dev      # cargo tauri dev
 yarn build    # cargo tauri build -> src-tauri/target/release/bundle/nsis/*-setup.exe
-yarn test     # cargo test (37 unit test)
+yarn test     # cargo test (39 unit test)
 ```
 
 Installer ~2.8 MB, exe ~11 MB.
@@ -84,6 +84,11 @@ Hỏng ở đâu cũng **không** làm gián đoạn giọng đọc: thiếu key
 bất thường → tự lùi về Google Dịch; Google lỗi nữa → đọc nguyên văn. Dính **429 thì nghỉ hẳn
 60s** rồi mới thử lại, gọi tiếp chỉ tổ ăn 429.
 
+Lý do hỏng hiện **màu vàng ngay dưới thanh trạng thái** (vd `⚠ AI lỗi 401: Invalid API Key —
+đang dùng Google Dịch`) và tự biến mất khi AI chạy lại. App là GUI nên không ai đọc được
+stderr — không báo lên UI thì người dùng thấy vẫn đọc bình thường mà không biết AI đã ngừng.
+Mỗi lần đổi tình trạng chỉ báo một lần, không spam từng câu.
+
 API key lưu **thô** trong `%APPDATA%\ViNarrator\config.json` (`llm_api_key`) — app cá nhân,
 không hardcode và không đóng gói kèm, nhưng đừng share file config đó.
 
@@ -124,12 +129,16 @@ mới là cái phân biệt được.
 | `src-tauri/src/oneocr.rs` | OneOCR (Snipping Tool) + tự chép runtime | — (mới) |
 | `src-tauri/src/translate.rs` | Google Translate + LLM (OpenAI-compatible) | `translate.py` (deep-translator) |
 | `src-tauri/src/tts.rs` | `Windows.Media.SpeechSynthesis` + `PlaySound` | `tts.py` (winsdk + winsound) |
-| `src-tauri/src/dedup.rs` | chống đọc trùng phụ đề cuộn | `dedup.py` |
+| `src-tauri/src/dedup.rs` | chống đọc trùng phụ đề cuộn | `dedup.py` |¹
 | `src-tauri/src/speech_queue.rs` | hàng đợi đọc (dedup + cap 3) | `speech_queue.py` |
 | `src-tauri/src/narrator.rs` | 2 thread: chụp→OCR→dedup, và dịch→đọc | `narrator.py` |
 | `src-tauri/src/config.rs` | đọc/ghi config | `config.py` |
 | `src/App.tsx` | giao diện | `gui.py` |
 | `src/overlay/Overlay.tsx` | overlay kéo chọn vùng | `region_select.py` |
+
+¹ **Sửa một bug port từ bản Python:** luật "trừ hết phần đã đọc, còn ≤1 từ thì bỏ" chạy cả khi
+không trừ được gì, nên câu **một từ** (`Run!`, `Help!`) luôn đếm ra 1 và bị tuyên trùng dù chưa
+đọc bao giờ — đúng loại câu cảm thán hay gặp trong game. Nay chỉ áp luật khi thực sự có trừ.
 
 **Dịch chạy ở thread riêng.** Một câu dịch bằng AI tốn 200–800ms; để chung vòng chụp thì khung
 kế tiếp trễ đúng ngần ấy và phụ đề đổi trong lúc đó là mất luôn. Thread chụp đẩy câu qua channel,

@@ -15,11 +15,30 @@ use crate::ocr::Ocr;
 use crate::translate::{self, Translator};
 use crate::tts::TtsEngine;
 
+/// Cờ dựng lại từng phần. Trước đây gộp làm một nên kéo thanh "nhịp quét" cũng khiến OneOCR
+/// khởi tạo lại (~100-300ms) và deduper mất sạch lịch sử -> đọc lặp câu đang hiện.
+#[derive(Default)]
+struct Reload {
+    ocr: AtomicBool,
+    translate: AtomicBool,
+    dedup: AtomicBool,
+}
+
+impl Reload {
+    fn all() -> Self {
+        Self {
+            ocr: AtomicBool::new(true),
+            translate: AtomicBool::new(true),
+            dedup: AtomicBool::new(true),
+        }
+    }
+}
+
 pub struct Narrator {
     cfg: Arc<Mutex<Config>>,
     running: Arc<AtomicBool>,
     quit: Arc<AtomicBool>,
-    reload: Arc<AtomicBool>,
+    reload: Arc<Reload>,
     last_text: Arc<Mutex<String>>,
     tts: Arc<TtsEngine>,
 }
@@ -31,7 +50,7 @@ impl Narrator {
             cfg: Arc::new(Mutex::new(cfg)),
             running: Arc::new(AtomicBool::new(false)),
             quit: Arc::new(AtomicBool::new(false)),
-            reload: Arc::new(AtomicBool::new(true)),
+            reload: Arc::new(Reload::all()),
             last_text: Arc::new(Mutex::new(String::new())),
             tts,
         };
@@ -86,14 +105,17 @@ impl Narrator {
         }
     }
 
+    /// Đổi chế độ = đổi ngôn ngữ OCR VÀ hướng dịch, lịch sử dedup cũng thành vô nghĩa.
     pub fn set_mode(&self, mode: &str) {
         self.edit(|c| c.apply_mode(mode));
-        self.reload.store(true, Ordering::Relaxed);
+        for f in [&self.reload.ocr, &self.reload.translate, &self.reload.dedup] {
+            f.store(true, Ordering::Relaxed);
+        }
     }
 
     pub fn set_engine(&self, engine: String) {
         self.edit(|c| c.ocr_engine = engine.clone());
-        self.reload.store(true, Ordering::Relaxed);
+        self.reload.ocr.store(true, Ordering::Relaxed);
     }
 
     /// engine: "google" | "llm". Các field LLM chỉ có tác dụng khi engine = "llm".
@@ -105,7 +127,7 @@ impl Narrator {
             c.llm_api_key = api_key;
             c.llm_context_lines = context_lines;
         });
-        self.reload.store(true, Ordering::Relaxed);
+        self.reload.translate.store(true, Ordering::Relaxed);
     }
 
     /// Ba knob tinh chỉnh trước đây chỉ sửa được bằng tay trong config.json.
@@ -115,7 +137,8 @@ impl Narrator {
             c.min_line_len = min_line_len.clamp(1, 20);
             c.min_clean_ratio = min_clean_ratio.clamp(0.0, 1.0);
         });
-        self.reload.store(true, Ordering::Relaxed); // deduper dựng lại theo min_line_len
+        // interval_ms và min_clean_ratio đọc thẳng từ cfg mỗi vòng; chỉ min_line_len cần dựng lại.
+        self.reload.dedup.store(true, Ordering::Relaxed);
     }
 
     pub fn set_voice(&self, name: String) {
@@ -152,7 +175,7 @@ struct Worker {
     cfg: Arc<Mutex<Config>>,
     running: Arc<AtomicBool>,
     quit: Arc<AtomicBool>,
-    reload: Arc<AtomicBool>,
+    reload: Arc<Reload>,
     last_text: Arc<Mutex<String>>,
     tts: Arc<TtsEngine>,
 }
@@ -185,7 +208,17 @@ impl Worker {
             }
             let cfg = self.cfg.lock().unwrap().clone();
 
-            if self.reload.swap(false, Ordering::Relaxed) {
+            let redo_ocr = self.reload.ocr.swap(false, Ordering::Relaxed);
+            let redo_translate = self.reload.translate.swap(false, Ordering::Relaxed);
+            if self.reload.dedup.swap(false, Ordering::Relaxed) {
+                deduper =
+                    LineDeduper::new(cfg.dedup_require_stable, cfg.min_line_len, cfg.fuzzy_threshold);
+            }
+            if redo_translate {
+                let _ = tx.send(Msg::Reload(Box::new(cfg.clone())));
+            }
+
+            if redo_ocr {
                 // Lần đầu chọn OneOCR phải chép ~110MB từ gói Snipping Tool -> báo trước
                 // để người dùng không tưởng app treo.
                 if cfg.ocr_engine != "windows" && !crate::oneocr::runtime_ready() {
@@ -193,14 +226,8 @@ impl Worker {
                 } else {
                     self.status("Đang khởi tạo OCR...");
                 }
-                let _ = tx.send(Msg::Reload(Box::new(cfg.clone())));
                 match Ocr::new(&cfg) {
                     Ok(o) => {
-                        self.status(format!(
-                            "Sẵn sàng — {}, {}",
-                            o.info(),
-                            translate::describe(&cfg)
-                        ));
                         ocr = Some(o);
                     }
                     Err(e) => {
@@ -209,6 +236,11 @@ impl Worker {
                     }
                 }
                 deduper.reset();
+            }
+
+            // Thanh trạng thái gộp cả hai vế nên phải cập nhật khi BẤT KỲ vế nào đổi.
+            if let Some(o) = ocr.as_ref().filter(|_| redo_ocr || redo_translate) {
+                self.status(format!("Sẵn sàng — {}, {}", o.info(), translate::describe(&cfg)));
             }
 
             let Some(engine) = ocr.as_ref().filter(|_| self.running.load(Ordering::Relaxed)) else {
@@ -285,6 +317,10 @@ fn translate_loop(
         }
         for src in pending.into_iter().skip(skip) {
             let out = translator.translate(&src);
+            // "" = AI vừa chạy lại được -> UI xoá cảnh báo.
+            if let Some(notice) = translator.drain_notice() {
+                let _ = app.emit("warn", notice);
+            }
             *last_text.lock().unwrap() = out.clone();
             let _ = app.emit("text", Spoken { src, out: out.clone() });
             tts.speak(&out);

@@ -35,6 +35,12 @@ pub struct Translator {
     context: VecDeque<String>,
     /// 0 = tắt gửi ngữ cảnh (dịch từng câu rời, rẻ token và nhanh hơn).
     context_lines: usize,
+    /// Tình trạng LLM hiện tại ("" = ổn). App là GUI, không ai đọc được stderr — key sai hay
+    /// hết quota mà chỉ `eprintln!` thì người dùng thấy vẫn đọc bình thường (đã lùi về Google)
+    /// và không hề biết AI đã ngừng chạy.
+    notice: String,
+    /// Thay đổi chưa đẩy lên UI. Chỉ set khi `notice` ĐỔI -> không spam mỗi câu.
+    pending_notice: Option<String>,
     cooldown_until: Option<Instant>,
     client: reqwest::blocking::Client,
 }
@@ -59,6 +65,8 @@ impl Translator {
             llm,
             context: VecDeque::new(),
             context_lines: cfg.llm_context_lines.min(MAX_CONTEXT_LINES),
+            notice: String::new(),
+            pending_notice: None,
             cooldown_until: None,
             client,
         }
@@ -71,6 +79,18 @@ impl Translator {
         let out = self.via_llm(text).unwrap_or_else(|| self.via_google(text));
         self.remember(text);
         out
+    }
+
+    /// Lấy thông báo cần hiện lên UI, nếu tình trạng vừa đổi. "" = vừa hoạt động lại bình thường.
+    pub fn drain_notice(&mut self) -> Option<String> {
+        self.pending_notice.take()
+    }
+
+    fn set_notice(&mut self, msg: String) {
+        if self.notice != msg {
+            self.notice = msg.clone();
+            self.pending_notice = Some(msg);
+        }
     }
 
     fn remember(&mut self, text: &str) {
@@ -113,28 +133,32 @@ impl Translator {
         let body = match res {
             Ok(r) if r.status().as_u16() == 429 => {
                 self.cooldown_until = Some(Instant::now() + COOLDOWN);
-                eprintln!("[translate] LLM hết quota (429), tạm dùng Google 60s");
+                self.set_notice("AI hết quota (429) — tạm dùng Google Dịch 60s".into());
                 return None;
             }
             Ok(r) if !r.status().is_success() => {
-                let status = r.status();
-                let b: String = r.text().unwrap_or_default().chars().take(200).collect();
-                eprintln!("[translate] LLM {status}: {b}");
+                let code = r.status().as_u16();
+                let detail = r.text().ok().as_deref().and_then(api_error_message).unwrap_or_default();
+                self.set_notice(format!("AI lỗi {code}{detail} — đang dùng Google Dịch"));
                 return None;
             }
             Ok(r) => r.text().ok()?,
             Err(e) => {
-                eprintln!("[translate] LLM lỗi mạng: {e}");
+                self.set_notice(format!("AI không gọi được ({e}) — đang dùng Google Dịch"));
                 return None;
             }
         };
 
-        let out = parse_llm(&body)?;
+        let Some(out) = parse_llm(&body) else {
+            self.set_notice("AI trả lời không đọc được — đang dùng Google Dịch".into());
+            return None;
+        };
         // Model nhỏ đôi khi bịa cả đoạn giải thích; dài bất thường thì thà lấy Google Dịch.
         if out.chars().count() > text.chars().count() * MAX_EXPANSION + 40 {
-            eprintln!("[translate] LLM trả lời dài bất thường, dùng Google");
+            self.set_notice("AI trả lời dài bất thường — câu này dùng Google Dịch".into());
             return None;
         }
+        self.set_notice(String::new());
         Some(out)
     }
 
@@ -209,6 +233,14 @@ fn user_prompt(context: &VecDeque<String>, text: &str) -> String {
     s.push_str("Dịch câu này:\n");
     s.push_str(text.trim());
     s
+}
+
+/// Rút câu lỗi từ body `{"error":{"message":"..."}}` (mọi provider OpenAI-compatible đều dùng
+/// dạng này). Không parse được thì trả None — thà báo mỗi mã HTTP còn hơn dội JSON thô lên UI.
+fn api_error_message(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let msg = v["error"]["message"].as_str()?;
+    Some(format!(": {}", msg.chars().take(120).collect::<String>()))
 }
 
 /// Body OpenAI: `{"choices":[{"message":{"content":"..."}}]}`.
@@ -355,6 +387,29 @@ mod tests {
         t.remember("I am the king.");
         assert_eq!(t.translate("Yes."), "Ừ");
         assert!(!h.join().unwrap().contains("I am the king."));
+    }
+
+    #[test]
+    fn loi_llm_bao_len_ui_va_tu_xoa_khi_chay_lai() {
+        // key sai -> phải có thông báo kèm câu lỗi thật của provider
+        let (base, h) = fake_server(
+            "401 Unauthorized",
+            r#"{"error":{"message":"Invalid API Key"}}"#,
+        );
+        let mut t = Translator::new(&llm_cfg(base, 0));
+        assert!(t.via_llm("Hi").is_none());
+        h.join().unwrap();
+        let notice = t.drain_notice().expect("phải có thông báo");
+        assert!(notice.contains("401") && notice.contains("Invalid API Key"), "{notice}");
+        // chỉ báo MỘT lần cho tới khi tình trạng đổi -> không spam mỗi câu
+        assert!(t.drain_notice().is_none());
+
+        // gọi lại thành công -> "" để UI xoá cảnh báo
+        let (base2, h2) = fake_server("200 OK", r#"{"choices":[{"message":{"content":"Chào"}}]}"#);
+        t.llm.as_mut().unwrap().base_url = base2;
+        assert_eq!(t.via_llm("Hi").as_deref(), Some("Chào"));
+        h2.join().unwrap();
+        assert_eq!(t.drain_notice().as_deref(), Some(""));
     }
 
     #[test]

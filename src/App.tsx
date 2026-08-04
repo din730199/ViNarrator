@@ -16,6 +16,8 @@ export default function App() {
   const [status, setStatus] = useState('');
   // Lỗi nạp phải có state RIÊNG: dùng chung `status` thì event "status" của worker ghi đè mất.
   const [err, setErr] = useState('');
+  // Cảnh báo từ khâu dịch (key sai, hết quota…). Rỗng = đang chạy bình thường.
+  const [warn, setWarn] = useState('');
   const [log, setLog] = useState<Spoken[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -27,6 +29,7 @@ export default function App() {
     void invoke<boolean>('is_running').then(setRunning, fail);
     const un = [
       listen<string>('status', (e) => setStatus(e.payload)),
+      listen<string>('warn', (e) => setWarn(e.payload)),
       // giữ 200 dòng gần nhất — log dài không giúp gì mà tốn RAM
       listen<Spoken>('text', (e) => setLog((l) => [...l, e.payload].slice(-200))),
       listen<boolean>('running', (e) => setRunning(e.payload)), // hotkey Ctrl+Alt+S đổi trạng thái
@@ -311,6 +314,9 @@ export default function App() {
       >
         {err || status || 'Ctrl+Alt+S bật/tắt · Ctrl+Alt+R đọc lại'}
       </div>
+      {warn && (
+        <div style={{ ...pad, color: '#fbbf24', fontSize: 12, marginBottom: 4 }}>⚠ {warn}</div>
+      )}
       <div
         ref={logRef}
         style={{

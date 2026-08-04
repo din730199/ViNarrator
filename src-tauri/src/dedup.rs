@@ -72,12 +72,17 @@ impl LineDeduper {
         }
         // dòng này gồm toàn nội dung đã đọc? (vd 2 dòng gộp thành 1 dòng dài)
         let mut leftover = key.to_string();
+        let mut removed = false;
         for r in &self.recent {
             if !r.is_empty() && leftover.contains(r.as_str()) {
                 leftover = leftover.replace(r.as_str(), " ");
+                removed = true;
             }
         }
-        if leftover.split_whitespace().count() <= 1 {
+        // `removed` là bắt buộc: không trừ được gì thì leftover vẫn là câu gốc, và câu MỘT TỪ
+        // ("Run!", "Help!") luôn đếm ra 1 -> bị tuyên trùng dù chưa đọc bao giờ. Bug port từ
+        // bản Python, nuốt đúng loại câu cảm thán hay gặp trong game.
+        if removed && leftover.split_whitespace().count() <= 1 {
             return true;
         }
         // gần giống dòng đã đọc (OCR sai vài ký tự) -> coi là trùng.
@@ -165,6 +170,23 @@ mod tests {
             d.feed("một câu hoàn toàn khác biệt ở đây"),
             ["một câu hoàn toàn khác biệt ở đây"]
         );
+    }
+
+    #[test]
+    fn cau_mot_tu_van_duoc_doc() {
+        let mut d = d(false);
+        assert_eq!(d.feed("Run!"), ["Run!"]);
+        assert_eq!(d.feed("Help!"), ["Help!"]);
+        // nhưng lặp lại thì vẫn phải bị chặn
+        assert!(d.feed("Run!").is_empty());
+    }
+
+    #[test]
+    fn cau_mot_tu_khong_pha_luat_gop_dong() {
+        // luật "trừ hết phần đã đọc, còn <=1 từ thì bỏ" phải còn nguyên tác dụng
+        let mut d = d(false);
+        d.feed("một đêm nọ silvermane bo cho tôi");
+        assert!(d.feed("một đêm nọ silvermane bo cho tôi nhé").is_empty());
     }
 
     #[test]
