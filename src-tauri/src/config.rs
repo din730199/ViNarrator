@@ -21,6 +21,9 @@ pub struct Config {
     pub interval_ms: u64,
 
     // Chống đọc trùng phụ đề cuộn
+    /// Chỉ đọc dòng đã thấy ở khung TRƯỚC -> không đọc nửa câu đang hiện dần.
+    /// Cái giá: phụ đề phải đứng yên **1–2 lần `interval_ms`** mới được đọc, chớp nhanh hơn
+    /// là mất trắng. Đó là lý do `interval_ms` phải nhỏ (xem mặc định).
     pub dedup_require_stable: bool,
     pub min_line_len: usize,
     /// Hai dòng giống nhau tới mức này (0..1) thì coi là trùng, không đọc lại.
@@ -71,7 +74,10 @@ impl Default for Config {
         Self {
             region: Region { left: 100, top: 100, width: 800, height: 200 },
             exclude_region: None,
-            interval_ms: 1200,
+            // 700 chứ không phải 1200 của bản Python: nhân với `dedup_require_stable` thì 1200
+            // bắt phụ đề phải hiện 1,2-2,4s mới đọc được — chớp nhanh hơn là mất. Đo trên máy
+            // thật: OneOCR 73ms/khung, Windows OCR 16ms -> ở nhịp 700ms chỉ tốn ~10% một nhân.
+            interval_ms: 700,
             dedup_require_stable: true,
             // 3, không phải 4: rác dấu câu (".", "-", "|", "•") đã bị `min_clean_ratio` dọn,
             // phần còn lại chỉ là mảnh chữ 1-2 ký tự ("o", "ll", "at"). Lên 4 sẽ nuốt luôn
@@ -189,7 +195,7 @@ mod tests {
         let c: Config = serde_json::from_str(s).unwrap();
         assert_eq!(c.region.width, 3);
         assert_eq!(c.volume, 40);
-        assert_eq!(c.interval_ms, 1200);
+        assert_eq!(c.interval_ms, Config::default().interval_ms);
         assert_eq!(c.min_clean_ratio, 0.6);
     }
 

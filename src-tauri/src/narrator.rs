@@ -205,9 +205,13 @@ impl Worker {
         // chụp thì khung kế tiếp bị trễ đúng ngần ấy và phụ đề đổi trong lúc đó là mất luôn.
         let (tx, rx) = mpsc::channel::<Msg>();
         {
-            let (app, tts, last_text) =
-                (self.app.clone(), self.tts.clone(), self.last_text.clone());
-            std::thread::spawn(move || translate_loop(app, tts, last_text, rx));
+            let (app, tts, last_text, running) = (
+                self.app.clone(),
+                self.tts.clone(),
+                self.last_text.clone(),
+                self.running.clone(),
+            );
+            std::thread::spawn(move || translate_loop(app, tts, last_text, running, rx));
         }
 
         loop {
@@ -304,6 +308,7 @@ fn translate_loop(
     app: AppHandle,
     tts: Arc<TtsEngine>,
     last_text: Arc<Mutex<String>>,
+    running: Arc<AtomicBool>,
     rx: Receiver<Msg>,
 ) {
     let mut translator = Translator::new(&Config::default());
@@ -319,12 +324,31 @@ fn translate_loop(
             }
             msg = rx.try_recv().ok();
         }
+        // Bấm DỪNG là phải im NGAY. `stop_playback()` chỉ xoá hàng đợi TTS; nếu ở đây cứ dịch
+        // tiếp rồi `speak()` thì nạp lại vào đúng cái hàng đợi vừa xoá -> vẫn nghe thêm mấy câu
+        // sau khi đã bấm dừng (dịch bằng AI thì kéo dài tới ~2,5s).
+        if !running.load(Ordering::Relaxed) {
+            if !pending.is_empty() {
+                eprintln!("[translate] dừng đọc — bỏ {} câu đang chờ", pending.len());
+            }
+            continue;
+        }
+
         let skip = pending.len().saturating_sub(MAX_PENDING);
         if skip > 0 {
             eprintln!("[translate] bỏ {skip} câu tồn đọng (dịch chậm hơn phụ đề)");
         }
         for src in pending.into_iter().skip(skip) {
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
             let out = translator.translate(&src);
+            // Dịch tốn 200-800ms — người dùng có thể bấm dừng ngay trong lúc đó.
+            // ponytail: vẫn còn khe hở vài micro giây giữa kiểm tra này và speak(); chấp nhận,
+            // muốn kín hẳn thì phải đánh số thế hệ cho hàng đợi TTS.
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
             // "" = AI vừa chạy lại được -> UI xoá cảnh báo.
             if let Some(notice) = translator.drain_notice() {
                 let _ = app.emit("warn", notice);

@@ -100,7 +100,7 @@ Ba knob đầu chỉnh ngay trong giao diện (**TINH CHỈNH BẮT CHỮ**), ph
 |---|---|---|
 | `min_clean_ratio` | `0.6` | Bỏ dòng có điểm "sạch" chuẩn hoá dưới ngưỡng — chặn chữ OCR bịa. Nâng nếu còn nghe đọc rác, hạ (hoặc `0` để tắt) nếu câu thật bị bỏ oan. |
 | `min_line_len` | `3` | Bỏ dòng ngắn hơn ngần này ký tự. Đừng lên 4: `Yes`, `No!`, `Go!`, `Run` đều đúng 3 ký tự. |
-| `interval_ms` | `1200` | Nhịp quét. |
+| `interval_ms` | `700` | Nhịp quét. Đừng nâng cao: nhân với `dedup_require_stable` thành thời gian phụ đề phải đứng yên mới bắt được. |
 | `fuzzy_threshold` | `0.97` | Hai dòng giống nhau tới mức này thì bỏ dòng sau. **Đo được**, xem dưới. |
 | `min_height_ratio` | `0.6` | Bỏ dòng thấp hơn `tỉ lệ × dòng cao nhất` trong khung. Cắt chữ nhỏ của giao diện (thanh tua, tiêu đề video). Đặt `0` để tắt. Áp cho cả hai engine. |
 | `binarize_threshold` | `150` | Chỉ dùng cho Windows OCR: ngưỡng cho lượt OCR nhị phân hoá (`max(R,G,B) ≥ ngưỡng` = chữ). Hạ xuống nếu phụ đề mờ/xám; nâng lên nếu nền sáng bị nhận nhầm. |
@@ -111,7 +111,13 @@ chắc chắn là OCR bịa). Dấu câu thường bị loại khỏi cả tử 
 Đo thật: `' oanqCảaTôi Phả Server Minecraft Bi Bo H` được 0.50, câu đọc đúng được 1.00.
 Chế độ Trung tắt luật chữ có dấu vì chữ Hán vốn ngoài ASCII.
 
-Hai luật này **chồng lấn nhau**, biết ranh giới thì đỡ chỉnh nhầm: `min_clean_ratio` đã dọn sạch
+**Nhịp quét nhân đôi thành độ trễ.** `dedup_require_stable` bắt một dòng phải xuất hiện ở **hai
+khung liên tiếp** mới được đọc (tránh đọc nửa câu đang hiện dần), nên phụ đề phải đứng yên
+**1–2 lần `interval_ms`**; chớp nhanh hơn là mất trắng. Nhịp 1200 của bản Python đòi tới 2,4s —
+quá lâu cho thoại game. Đo chi phí thật mỗi khung: **OneOCR 73ms, Windows OCR 16ms** (2 lượt),
+nên ở nhịp 700ms chỉ tốn ~10% một nhân. Hạ xuống là gần như miễn phí.
+
+Hai luật lọc dòng ngắn **chồng lấn nhau**, biết ranh giới thì đỡ chỉnh nhầm: `min_clean_ratio` đã dọn sạch
 rác dấu câu (`.` `-` `|` `'` `..` `•`), nên việc còn lại của `min_line_len` chỉ là mảnh **chữ cái**
 1–2 ký tự (`o`, `ll`, `at`, `l1`). Vì vậy `3` là trần hợp lý — lên `4` là bắt đầu nuốt thoại thật.
 
@@ -177,6 +183,11 @@ không trừ được gì, nên câu **một từ** (`Run!`, `Help!`) luôn đ�
 kế tiếp trễ đúng ngần ấy và phụ đề đổi trong lúc đó là mất luôn. Thread chụp đẩy câu qua channel,
 thread dịch gom hết cái đã tới rồi **bỏ bớt, chỉ giữ 3 câu mới nhất** — dịch không kịp phụ đề thì
 thà bỏ câu cũ còn hơn đọc trễ cả phút.
+
+Thread này **phải tự kiểm tra cờ `running`**. `stop_playback()` chỉ xoá hàng đợi TTS; nếu thread
+dịch cứ dịch nốt rồi `speak()` thì nạp lại vào đúng cái hàng đợi vừa xoá — bấm DỪNG xong vẫn
+nghe thêm mấy câu. Đo bằng server dịch giả (cố tình chậm 1,5s/câu): bản chưa vá gửi request
+**sau khi bấm dừng 1 giây**; bản đã vá dừng hẳn, theo dõi thêm 8s không có gì.
 
 Unit test của bản Python (`tests/test_dedup.py`, `tests/test_speech_queue.py`) đã port nguyên
 sang Rust và đều pass — dùng để kiểm chứng bản port. Cột "port từ" trỏ tới file của bản Python,
