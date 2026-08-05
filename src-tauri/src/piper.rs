@@ -27,7 +27,7 @@ const MODEL_URL: &str = "https://huggingface.co/rhasspy/piper-voices/resolve/mai
 const MODEL_CFG_URL: &str = "https://huggingface.co/rhasspy/piper-voices/resolve/main/vi/vi_VN/vais1000/medium/vi_VN-vais1000-medium.onnx.json";
 
 /// Không hiện cửa sổ console đen mỗi lần dựng tiến trình con (CREATE_NO_WINDOW).
-const NO_WINDOW: u32 = 0x0800_0000;
+pub(crate) const NO_WINDOW: u32 = 0x0800_0000;
 /// BELOW_NORMAL_PRIORITY_CLASS — **bắt buộc**, không phải tinh chỉnh cho vui.
 ///
 /// onnxruntime trong piper.exe bung ~5,8 nhân trong 0,39s. Đo lúc CPU đang bị tranh
@@ -42,7 +42,7 @@ const NO_WINDOW: u32 = 0x0800_0000;
 /// Ghim nhân KHÔNG thay được cái này: `SetProcessAffinityMask` đặt xong bị chính onnxruntime
 /// ghi đè về đủ 12 luồng (đã kiểm: đặt `[0]`, đọc lại ra `[0..11]`), còn `OMP_NUM_THREADS` /
 /// `ORT_INTRA_OP_NUM_THREADS` thì bản piper 2023 không đọc.
-const BELOW_NORMAL: u32 = 0x0000_4000;
+pub(crate) const BELOW_NORMAL: u32 = 0x0000_4000;
 /// Câu dài nhất đo được tốn 0,405s. 15s là để phát hiện piper treo hẳn, không phải để chờ.
 const SYNTH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Tải 82 MB: client blocking của reqwest mặc định timeout 30s -> đứt giữa chừng ở mạng chậm.
@@ -68,7 +68,8 @@ pub fn ready() -> bool {
     exe().exists() && model().exists() && dir().join("vi.onnx.json").exists()
 }
 
-fn fetch(url: &str, to: &PathBuf) -> Result<(), String> {
+/// Tải một file, dùng chung với [`crate::vieneu`].
+pub(crate) fn fetch(url: &str, to: &PathBuf) -> Result<(), String> {
     if to.exists() {
         return Ok(());
     }

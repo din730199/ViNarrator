@@ -43,11 +43,26 @@ export const ENGINES: { value: string; label: string }[] = [
   { value: 'windows', label: 'Windows OCR — nhẹ, nhanh hơn' },
 ];
 
-// Đo trên máy thật, cùng một câu: Piper 22 kHz tổng hợp 0,31s cho 6,8s tiếng (RTF 0,05) —
-// nhanh ngang giọng Windows dù là mạng neural. Đổi lại phải tải ~82 MB ở lần đầu bật.
-export const TTS_ENGINES: { value: string; label: string }[] = [
-  { value: 'windows', label: 'Giọng Windows — có sẵn, 0 MB' },
-  { value: 'piper', label: 'Piper — giọng neural, tự nhiên hơn (tải ~82 MB)' },
+// Đo lúc CPU bị tranh (giả lập game kín 6 nhân), cả hai đều là tiến trình riêng ở
+// BELOW_NORMAL — xem README mục "Giọng đọc".
+export const TTS_ENGINES: { value: string; label: string; ghi_chu: string }[] = [
+  { value: 'windows', label: 'Giọng Windows — có sẵn', ghi_chu: '0 MB, cài xong chạy ngay' },
+  {
+    value: 'piper',
+    label: 'Piper — neural, nhẹ',
+    ghi_chu: 'tải ~82 MB · 97 MB RAM · chữ tiếng Anh đọc bằng âm Anh nhưng giọng chỉ học tiếng Việt',
+  },
+  {
+    value: 'vieneu',
+    label: 'VieNeu — neural 48 kHz, đọc lẫn Anh–Việt',
+    ghi_chu: 'tải ~560 MB · 1,3 GB RAM · êm hơn Piper khi chơi game, đổi lại nặng hơn nhiều',
+  },
+];
+
+// 14 giọng có sẵn của VieNeu v3 Turbo (đọc từ chính model lúc chạy thử).
+export const VIENEU_VOICES: string[] = [
+  'Minh Đức', 'Phạm Tuyên', 'Thái Sơn', 'Xuân Vĩnh', 'Thanh Bình', 'Trúc Ly', 'Ngọc Linh',
+  'Đoan Trang', 'Mai Anh', 'Thục Đoan', 'Minh Triết', 'Thùy Dung', 'Quang Sơn', 'Ngọc Trân',
 ];
 
 // Provider dùng chung API OpenAI (`/chat/completions`) nên chỉ khác base_url + model.

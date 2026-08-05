@@ -62,10 +62,12 @@ pub struct Config {
     /// Số câu trước gửi kèm cho LLM để chọn xưng hô nhất quán. 0 = tắt (rẻ token, nhanh hơn).
     pub llm_context_lines: usize,
 
-    /// "windows" (Windows.Media.SpeechSynthesis, có sẵn) | "piper" (giọng neural, tải ~82 MB
-    /// ở lần đầu bật). Chọn "piper" mà chưa tải xong thì vẫn đọc bằng giọng Windows.
+    /// "windows" (Windows.Media.SpeechSynthesis, có sẵn) | "piper" (neural, ~82 MB) |
+    /// "vieneu" (neural 48 kHz đọc lẫn Anh–Việt, ~750 MB + 1,3 GB RAM).
+    /// Chọn engine chưa tải xong thì vẫn đọc bằng giọng Windows, không câm.
     pub tts_engine: String,
-    /// Chỉ áp cho engine "windows" — Piper chỉ có một giọng (vi_VN-vais1000).
+    /// Dùng cho "windows" (tên giọng WinRT) và "vieneu" (một trong 14 giọng có sẵn).
+    /// Piper chỉ có một giọng (vi_VN-vais1000) nên bỏ qua field này.
     pub voice_name: String,
     /// bội số 0.5..2.0
     pub speed: f64,

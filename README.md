@@ -23,9 +23,9 @@ yarn build    # cargo tauri build -> src-tauri/target/release/bundle/nsis/*-setu
 yarn test     # cargo test (48 unit test)
 ```
 
-Installer ~3.4 MB, exe ~13.5 MB.
+Installer ~3,4 MB, exe ~13,6 MB — giọng neural tải riêng khi bật, không nhét vào installer.
 
-Ba test đụng mạng/loa nên để `#[ignore]`, chạy tay khi sửa phần giọng đọc:
+Sáu test đụng mạng/loa nên để `#[ignore]`, chạy tay khi sửa phần giọng đọc:
 
 ```powershell
 cargo test --lib -- --ignored --nocapture --test-threads=1
@@ -171,24 +171,27 @@ mới là cái phân biệt được.
 
 Chọn trong giao diện (**GIỌNG ĐỌC**):
 
-| | tần số | tổng hợp¹ | dung lượng | ghi chú |
-|---|---|---|---|---|
-| **Giọng Windows** (mặc định) | 16 kHz | 0,26s | 0 MB | có sẵn, chọn được giọng cài trong Windows |
-| **Piper** `vi_VN-vais1000-medium` | 22 kHz | 0,31s | ~82 MB | mạng neural (VITS), một giọng duy nhất |
+| | tần số | tiếng đầu¹ | đĩa | RAM | ghi chú |
+|---|---|---|---|---|---|
+| **Giọng Windows** (mặc định) | 16 kHz | 0,26s | 0 MB | — | có sẵn, chọn được giọng cài trong Windows |
+| **Piper** `vi_VN-vais1000-medium` | 22 kHz | 0,39s | 82 MB | 97 MB | VITS, một giọng duy nhất |
+| **VieNeu-TTS v3 Turbo** | 48 kHz | **0,18s** | 561 MB | 1,3 GB | 14 giọng, **đọc lẫn Anh–Việt**, phát theo mẩu |
 
-¹ cùng một câu 144 ký tự, đo trên cùng máy.
+¹ thời gian tới lúc **nghe thấy tiếng**, không phải tới lúc xong cả câu. Cùng máy, câu 144 ký tự.
 
-Bốn model đã tải về nghe thử trước khi chọn — **Piper thắng vì độ trễ, không phải vì chất lượng**:
+Bốn model đã tải về nghe thử trước khi chọn:
 
-| | tổng hợp | RTF | vì sao loại |
-|---|---|---|---|
-| **Piper** | 0,31s | **0,05** | *(chọn)* |
-| MMS-TTS-vie (Meta) | 2,2s | 0,22 | chậm hơn 7× mà không hơn rõ rệt |
-| VieNeu-TTS v3 Turbo | 3,7s | 0,41 | **7 đồ thị ONNX ở 2 repo (~285 MB) + phonemizer Python + 1,3 GB RAM.** Không phải vì chậm — xem *Còn VieNeu thì sao* ở dưới |
-| V-TTS / Valtec | — | — | trọng số `v-tts/v-tts-pretrained` trả **401**, không tải được |
+| | RTF | kết quả |
+|---|---|---|
+| **Piper** | 0,05 | nhẹ nhất, mặc định cho máy yếu |
+| **VieNeu-TTS v3 Turbo** | 0,41 | 48 kHz, ~10.000 giờ Anh–Việt — chọn khi cần đọc lẫn tiếng Anh |
+| MMS-TTS-vie (Meta) | 0,22 | chậm hơn Piper 7× mà không hơn rõ rệt |
+| V-TTS / Valtec | — | trọng số `v-tts/v-tts-pretrained` trả **401**; bản `.exe` 394 MB thì **GUI thuần** (không gọi được từ code) và **CC BY-NC 4.0** |
 
-Với thuyết minh game realtime, nhịp quét là 700ms — engine nào tổng hợp lâu hơn thế thì câu đọc
-ra đã lệch khỏi cái đang hiện trên màn hình. RTF 0,05 của Piper coi như không thêm trễ.
+**Bài học đo được:** ban đầu VieNeu bị loại vì "3,7s/câu". Sai — 3,7s là cho **cả câu 9 giây**.
+Thư viện có sẵn `infer_stream` (**model card không ghi**) cho mẩu tiếng đầu sau 0,18s, và sinh
+nhanh gấp ~2,3 lần tốc độ phát nên không bao giờ hụt. Cái chậm là **kiến trúc app** chờ WAV
+hoàn chỉnh, không phải model.
 
 ### Vì sao Piper chạy bằng tiến trình con chứ không nhúng thẳng
 
@@ -247,22 +250,55 @@ Vì cờ có thể bị nuốt lặng như vậy, test `tien_trinh_con_chay_o_uu
 `GetPriorityClass` từ hệ điều hành** sau khi đã tổng hợp thật, chứ không tin `creation_flags`.
 Đã chạy đỏ để chắc nó phân biệt được: bỏ cờ ra thì đọc ra `0x20` và test fail.
 
-### Còn VieNeu thì sao (đo lại cho công bằng)
+### Chọn Piper hay VieNeu
 
-`infer_stream` có sẵn trong thư viện (model card không ghi) và cho **tiếng đầu sau 0,25s** —
-nhanh hơn Piper. Lý do loại VieNeu **không phải "chậm"** như ghi ở bảng trên:
+Cùng đo lúc CPU bị tranh, cả hai đều là tiến trình riêng ở BELOW_NORMAL, so với nền:
 
-| cùng là tiến trình riêng, cùng BELOW_NORMAL | p50 | p99 | max | RAM |
-|---|---|---|---|---|
-| Piper | **+7,8%** | +7,9% | +36,2% | **97 MB** |
-| VieNeu (streaming, `threads=2`) | +17,7% | **+6,2%** | **+0,1%** | 1300 MB |
+| | p50 | p99 | max (giật) | RAM | đĩa |
+|---|---|---|---|---|---|
+| Piper | **+7,8%** | +7,9% | +36,2% | **97 MB** | **82 MB** |
+| VieNeu (`infer_stream`, `threads=2`) | +17,7% | **+6,2%** | **+0,1%** | 1300 MB | 561 MB |
 
-VieNeu **êm hơn hẳn ở khoản giật** (chạy đều 1,5 nhân thay vì bùng 5,8), nhưng nâng nền lên
-gấp đôi và tốn **13× RAM**. Nó bị loại vì RAM + phải tự lái 7 đồ thị ONNX từ Rust, **không phải
-vì tốc độ**.
+**VieNeu êm hơn ở khoản giật** — chạy đều 1,5 nhân thay vì bùng 5,8 như Piper — nhưng nâng nền
+lên gấp đôi và tốn 13× RAM. Piper vẫn là mặc định vì nhẹ; chọn VieNeu khi cần chất lượng và
+đọc lẫn tiếng Anh.
 
-Cả hai phép đo trên đều là **trường hợp xấu nhất**: "game" là vòng nhân ma trận tổng hợp
-(không có đồng bộ GPU), và TTS bị bơm liên tục, dày hơn phụ đề thật nhiều lần.
+Cả hai phép đo đều là **trường hợp xấu nhất**: "game" là vòng nhân ma trận tổng hợp (không có
+đồng bộ GPU), và TTS bị bơm liên tục, dày hơn phụ đề thật nhiều lần.
+
+### VieNeu chạy bằng gì
+
+VieNeu là thư viện **Python**, nên app tự nuôi một môi trường Python riêng — **không** dùng
+Python có sẵn của máy (đã thấy `uv` vớ nhầm Python 3.12 của người dùng; app phải xác định
+trước môi trường của mình).
+
+```
+%LOCALAPPDATA%\ViNarrator\vieneu\
+  uv.exe    46 MB   một file tĩnh, tải từ astral-sh/uv (ghim 0.12.1)
+  py\       60 MB   uv tự tải CPython 3.12 (--python-preference only-managed)
+  venv\    163 MB   uv pip install --no-deps vieneu + 8 gói thật sự cần
+  hf\      285 MB   model, kéo về lúc chạy nóng
+```
+
+Cài `--no-deps` rồi tự thêm từng gói là **cố ý**: bản đầy đủ kéo theo `gradio`/`librosa`/
+`perth`/`pandas`/`sklearn` thành **713 MB**, bản rút gọn **163 MB** mà tổng hợp y hệt (đã kiểm).
+
+Đo được: **65 giây, 561 MB** từ trạng thái trắng trên mạng nhanh.
+
+Ba chi tiết:
+
+- **Phát theo mẩu, qua hàng đợi `waveOut`** (`wave_out.rs`) chứ **không** dùng `PlaySound`.
+  Đây là bug thật đã gặp: `PlaySound` mở lại thiết bị âm thanh ở mỗi lần gọi, đo được
+  **+71,6 ms mỗi ranh giới mẩu** (lớn nhất +110 ms, tổng **+0,646s** chèn vào câu 9,44s).
+  Và `infer_stream` cắt theo *frame* chứ không theo cụm từ — tôi đã đoán sai chỗ này — nên
+  khe rơi vào **giữa từ**, nghe giật rất rõ. Cùng đống mẩu ấy ghép sẵn thành một file rồi phát
+  một lần chỉ lệch +0,112s. Chuyển sang `waveOut` xếp hàng nhiều đệm: khe còn **+0,017s**
+  (~2 ms mỗi ranh giới), giảm 35 lần. Test `phat_lien_mach_khong_co_khe` giữ chỗ này — nó
+  **trừ đi độ trễ mẩu đầu** để đo đúng khe chứ không đo chi phí cố hữu của streaming.
+- **Bên Rust tự đếm số thứ tự mẩu**, không đọc tên file worker in ra — cùng lý do với Piper:
+  đường dẫn có thể chứa tiếng Việt.
+- **Bấm DỪNG giữa câu** vẫn phải rút hết tin của câu đó khỏi kênh, nếu không câu sau sẽ đọc
+  nhầm mẩu thừa của câu trước. Có test `dung_giua_cau_thi_im_ngay` giữ chỗ này.
 
 ## Kiến trúc
 
@@ -274,6 +310,9 @@ Cả hai phép đo trên đều là **trường hợp xấu nhất**: "game" là
 | `src-tauri/src/translate.rs` | Google Translate + LLM (OpenAI-compatible) | `translate.py` (deep-translator) |
 | `src-tauri/src/tts.rs` | chọn giọng + `Windows.Media.SpeechSynthesis` + `PlaySound` | `tts.py` (winsdk + winsound) |
 | `src-tauri/src/piper.rs` | giọng neural Piper (tiến trình con giữ sống) + tự tải runtime | — (mới) |
+| `src-tauri/src/vieneu.rs` | giọng VieNeu + tự nuôi Python bằng `uv` | — (mới) |
+| `src-tauri/src/vieneu_worker.py` | worker Python, nhúng vào exe rồi ghi ra đĩa lúc cài | — (mới) |
+| `src-tauri/src/wave_out.rs` | phát liền mạch bằng hàng đợi đệm `waveOut` (cho VieNeu) | — (mới) |
 | `src-tauri/src/dedup.rs` | chống đọc trùng phụ đề cuộn | `dedup.py` |¹
 | `src-tauri/src/speech_queue.rs` | hàng đợi đọc (dedup + cap 3) | `speech_queue.py` |
 | `src-tauri/src/narrator.rs` | 2 thread: chụp→OCR→dedup, và dịch→đọc | `narrator.py` |
@@ -308,14 +347,14 @@ git show 64e09eb:gui.py          # xem 1 file
 git checkout 64e09eb -- narrator.py ocr.py tts.py   # lấy lại vài file
 ```
 
-Hai thứ của bản Python **chưa có** ở bản Rust (đều kéo theo PyTorch vài GB nên bỏ):
+Còn một thứ của bản Python **chưa có** ở bản Rust:
 
 | Bỏ | Vì sao | Muốn có lại |
 |---|---|---|
 | Chế độ "Đọc thuần" (OCR tiếng Việt, EasyOCR) | Windows OCR không hỗ trợ tiếng Việt | nhúng PaddleOCR ONNX qua crate `ort` |
-| Giọng MMS | đang là safetensors + torch | export ONNX một lần + viết tokenizer ký tự từ `vocab.json` |
 
-*(Giọng Piper đã có lại — xem **Giọng đọc** ở trên.)*
+*(Giọng Piper và VieNeu đã có lại — xem **Giọng đọc** ở trên. Giọng MMS bỏ hẳn: VieNeu hơn ở
+mọi mặt.)*
 
 Thư mục `models/` (~200 MB) cũng đã xoá và nằm trong `.gitignore` — `model.safetensors` 145 MB
 vượt giới hạn 100 MB của GitHub. Tải lại khi cần:

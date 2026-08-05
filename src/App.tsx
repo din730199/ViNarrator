@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Config, ENGINES, LLM_PRESETS, MODES, Spoken, TTS_ENGINES, Voice } from './types';
+import {
+  Config, ENGINES, LLM_PRESETS, MODES, Spoken, TTS_ENGINES, VIENEU_VOICES, Voice,
+} from './types';
 
 const PURPLE = '#7c3aed';
 const RED = '#b91c1c';
@@ -19,8 +21,8 @@ export default function App() {
   // Cảnh báo từ khâu dịch (key sai, hết quota…). Rỗng = đang chạy bình thường.
   const [warn, setWarn] = useState('');
   const [log, setLog] = useState<Spoken[]>([]);
-  // Runtime Piper đã có sẵn chưa — chỉ để chọn chữ hiển thị, không chặn gì.
-  const [piperReady, setPiperReady] = useState(false);
+  // Runtime của từng engine neural đã có sẵn chưa — chỉ để chọn chữ hiển thị, không chặn gì.
+  const [ready, setReady] = useState<Record<string, boolean>>({});
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -29,13 +31,20 @@ export default function App() {
     void invoke<Config>('get_config').then(setCfg, fail);
     void invoke<Voice[]>('list_voices').then(setVoices, fail);
     void invoke<boolean>('is_running').then(setRunning, fail);
-    void invoke<boolean>('piper_ready').then(setPiperReady, fail);
+    const hoiReady = () => {
+      for (const e of ['piper', 'vieneu']) {
+        void invoke<boolean>('engine_ready', { engine: e }).then((r) =>
+          setReady((x) => ({ ...x, [e]: r })),
+        );
+      }
+    };
+    hoiReady();
     const un = [
       listen<string>('status', (e) => {
         setStatus(e.payload);
-        // Tải Piper xong cũng báo qua "status" -> hỏi lại thay vì dò chuỗi. Event này hiếm
-        // (chỉ khi đổi engine/chế độ) nên kiểm 3 file là đủ rẻ.
-        void invoke<boolean>('piper_ready').then(setPiperReady);
+        // Cài xong engine cũng báo qua "status" -> hỏi lại thay vì dò chuỗi. Event này hiếm
+        // (chỉ khi đổi engine/chế độ) nên kiểm vài file là đủ rẻ.
+        hoiReady();
       }),
       listen<string>('warn', (e) => setWarn(e.payload)),
       // giữ 200 dòng gần nhất — log dài không giúp gì mà tốn RAM
@@ -291,9 +300,9 @@ export default function App() {
           value={cfg.tts_engine}
           onChange={(e) => {
             const engine = e.target.value;
-            // Lần đầu chọn Piper sẽ tải 82 MB ở nền — báo ngay để không tưởng app treo;
+            // Lần đầu chọn engine neural sẽ tải ở nền — báo ngay để không tưởng app treo;
             // tiến độ thật đến sau qua event "status".
-            if (engine === 'piper' && !piperReady) setStatus('Đang tải giọng Piper…');
+            if (!ready[engine]) setStatus(`Đang cài giọng ${engine === 'vieneu' ? 'VieNeu' : 'Piper'}…`);
             void invoke<Config>('set_tts_engine', { engine }).then(setCfg);
           }}
         >
@@ -303,22 +312,30 @@ export default function App() {
             </option>
           ))}
         </select>
+        <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+          {TTS_ENGINES.find((e) => e.value === cfg.tts_engine)?.ghi_chu}
+          {cfg.tts_engine !== 'windows' &&
+            (ready[cfg.tts_engine] ? ' · đã cài' : ' · SẼ CÀI khi đọc câu đầu')}
+        </div>
 
-        {cfg.tts_engine === 'piper' ? (
-          <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
-            vi_VN-vais1000 · {piperReady ? 'đã tải' : 'sẽ tải ở lần đọc đầu'} · chưa tải xong thì
-            vẫn đọc bằng giọng Windows.
-          </div>
-        ) : (
+        {cfg.tts_engine === 'piper' ? null : ( // Piper chỉ có một giọng
           <select
             value={cfg.voice_name}
-            disabled={voices.length === 0}
+            disabled={cfg.tts_engine === 'windows' && voices.length === 0}
             onChange={(e) => {
               setCfg({ ...cfg, voice_name: e.target.value });
               void invoke('set_voice', { name: e.target.value });
             }}
           >
-            {voices.length === 0 ? (
+            {cfg.tts_engine === 'vieneu' ? (
+              // Giọng nằm ở tham số dòng lệnh của worker -> đổi giọng sẽ dựng lại tiến
+              // trình con, câu kế tiếp mất thêm ~10s. Không phải lỗi.
+              VIENEU_VOICES.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))
+            ) : voices.length === 0 ? (
               <option>(chưa cài giọng tiếng Việt)</option>
             ) : (
               voices.map((v) => (

@@ -8,6 +8,8 @@ mod piper;
 mod speech_queue;
 mod translate;
 mod tts;
+mod vieneu;
+mod wave_out;
 
 use std::cell::Cell;
 
@@ -96,36 +98,57 @@ fn set_tuning(
     n.config()
 }
 
-/// engine: "windows" | "piper". Lần đầu chọn Piper phải tải ~82 MB — làm ở thread riêng và
-/// báo qua event, KHÔNG chặn command: chặn ở đây thì UI đơ suốt thời gian tải.
-/// Đổi config trước, tải sau: tải hỏng thì `tts.rs` tự lùi về giọng Windows, không câm.
+/// engine: "windows" | "piper" | "vieneu". Lần đầu chọn engine neural phải tải khá nhiều —
+/// làm ở thread riêng và báo qua event, KHÔNG chặn command: chặn ở đây thì UI đơ suốt thời
+/// gian tải. Đổi config trước, tải sau: tải hỏng thì `tts.rs` tự lùi về giọng Windows.
 #[tauri::command]
 fn set_tts_engine(app: AppHandle, n: tauri::State<Narrator>, engine: String) -> Config {
     n.set_tts_engine(engine.clone());
-    if engine == "piper" && !piper::ready() {
-        std::thread::spawn(move || {
-            let _ = app.emit("status", "Đang tải giọng Piper (~82 MB, chỉ lần đầu)...");
-            match piper::ensure_runtime() {
-                Ok(()) => {
-                    let _ = app.emit("status", "Đã tải xong giọng Piper — sẵn sàng");
-                    let _ = app.emit("warn", String::new());
-                }
-                Err(e) => {
-                    let _ = app.emit(
-                        "warn",
-                        format!("Không tải được Piper: {e} — tạm đọc bằng giọng Windows"),
-                    );
-                }
-            }
-        });
+    let can_tai = match engine.as_str() {
+        "piper" => !piper::ready(),
+        "vieneu" => !vieneu::ready(),
+        _ => false,
+    };
+    if !can_tai {
+        return n.config();
     }
+    std::thread::spawn(move || {
+        let (nhan, ket_qua) = if engine == "vieneu" {
+            // 561 MB trên đĩa: uv 46 + CPython 60 + gói 163 + model 285. Đo được ~65s trên
+            // mạng nhanh, nhưng mạng chậm thì vài phút.
+            let _ = app.emit(
+                "status",
+                "Đang cài giọng VieNeu (~560 MB, có thể vài phút, chỉ lần đầu)...",
+            );
+            ("VieNeu", vieneu::ensure_runtime())
+        } else {
+            let _ = app.emit("status", "Đang tải giọng Piper (~82 MB, chỉ lần đầu)...");
+            ("Piper", piper::ensure_runtime())
+        };
+        match ket_qua {
+            Ok(()) => {
+                let _ = app.emit("status", format!("Đã cài xong giọng {nhan} — sẵn sàng"));
+                let _ = app.emit("warn", String::new());
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "warn",
+                    format!("Không cài được {nhan}: {e} — tạm đọc bằng giọng Windows"),
+                );
+            }
+        }
+    });
     n.config()
 }
 
-/// Đã có sẵn runtime Piper chưa — UI dùng để biết có phải cảnh báo "sẽ tải 82 MB" hay không.
+/// Runtime của engine neural đã có sẵn chưa — UI dùng để biết có phải báo "sẽ tải" hay không.
 #[tauri::command]
-fn piper_ready() -> bool {
-    piper::ready()
+fn engine_ready(engine: String) -> bool {
+    match engine.as_str() {
+        "piper" => piper::ready(),
+        "vieneu" => vieneu::ready(),
+        _ => true,
+    }
 }
 
 #[tauri::command]
@@ -253,7 +276,7 @@ pub fn run() {
             set_translate,
             set_tuning,
             set_tts_engine,
-            piper_ready,
+            engine_ready,
             set_voice,
             set_speed,
             set_volume,
