@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import {
-  Config, ENGINES, LLM_PRESETS, MODES, Spoken, TTS_ENGINES, VIENEU_VOICES, Voice,
-} from './types';
+import { Config, ENGINES, LLM_PRESETS, MODES, Spoken, TTS_ENGINES, Voice } from './types';
 
 const PURPLE = '#7c3aed';
 const RED = '#b91c1c';
@@ -23,6 +21,9 @@ export default function App() {
   const [log, setLog] = useState<Spoken[]>([]);
   // Runtime của từng engine neural đã có sẵn chưa — chỉ để chọn chữ hiển thị, không chặn gì.
   const [ready, setReady] = useState<Record<string, boolean>>({});
+  // Giọng VieNeu do chính model báo (worker ghi ra lúc cài) — không chép cứng ở đây,
+  // model đổi danh sách thì UI tự đúng theo. Rỗng = chưa cài xong.
+  const [vieneuVoices, setVieneuVoices] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -32,11 +33,10 @@ export default function App() {
     void invoke<Voice[]>('list_voices').then(setVoices, fail);
     void invoke<boolean>('is_running').then(setRunning, fail);
     const hoiReady = () => {
-      for (const e of ['piper', 'vieneu']) {
-        void invoke<boolean>('engine_ready', { engine: e }).then((r) =>
-          setReady((x) => ({ ...x, [e]: r })),
-        );
-      }
+      void invoke<boolean>('engine_ready', { engine: 'vieneu' }).then((r) =>
+        setReady((x) => ({ ...x, vieneu: r })),
+      );
+      void invoke<string[]>('vieneu_voices').then(setVieneuVoices);
     };
     hoiReady();
     const un = [
@@ -300,9 +300,9 @@ export default function App() {
           value={cfg.tts_engine}
           onChange={(e) => {
             const engine = e.target.value;
-            // Lần đầu chọn engine neural sẽ tải ở nền — báo ngay để không tưởng app treo;
-            // tiến độ thật đến sau qua event "status".
-            if (!ready[engine]) setStatus(`Đang cài giọng ${engine === 'vieneu' ? 'VieNeu' : 'Piper'}…`);
+            // Lần đầu chọn VieNeu sẽ cài ở nền — báo ngay để không tưởng app treo;
+            // tiến độ thật (từng MB) đến sau qua event "status".
+            if (engine === 'vieneu' && !ready.vieneu) setStatus('Đang cài giọng VieNeu…');
             void invoke<Config>('set_tts_engine', { engine }).then(setCfg);
           }}
         >
@@ -318,34 +318,38 @@ export default function App() {
             (ready[cfg.tts_engine] ? ' · đã cài' : ' · SẼ CÀI khi đọc câu đầu')}
         </div>
 
-        {cfg.tts_engine === 'piper' ? null : ( // Piper chỉ có một giọng
-          <select
-            value={cfg.voice_name}
-            disabled={cfg.tts_engine === 'windows' && voices.length === 0}
-            onChange={(e) => {
-              setCfg({ ...cfg, voice_name: e.target.value });
-              void invoke('set_voice', { name: e.target.value });
-            }}
-          >
-            {cfg.tts_engine === 'vieneu' ? (
-              // Giọng nằm ở tham số dòng lệnh của worker -> đổi giọng sẽ dựng lại tiến
-              // trình con, câu kế tiếp mất thêm ~10s. Không phải lỗi.
-              VIENEU_VOICES.map((v) => (
+        <select
+          value={cfg.voice_name}
+          disabled={
+            cfg.tts_engine === 'windows' ? voices.length === 0 : vieneuVoices.length === 0
+          }
+          onChange={(e) => {
+            setCfg({ ...cfg, voice_name: e.target.value });
+            void invoke('set_voice', { name: e.target.value });
+          }}
+        >
+          {cfg.tts_engine === 'vieneu' ? (
+            // Giọng nằm ở tham số dòng lệnh của worker -> đổi giọng dựng lại tiến trình con.
+            // Đã hâm nóng sẵn ở nền nên người dùng không phải chờ ở câu kế tiếp.
+            vieneuVoices.length === 0 ? (
+              <option>(cài xong mới có danh sách giọng)</option>
+            ) : (
+              vieneuVoices.map((v) => (
                 <option key={v} value={v}>
                   {v}
                 </option>
               ))
-            ) : voices.length === 0 ? (
-              <option>(chưa cài giọng tiếng Việt)</option>
-            ) : (
-              voices.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.label}
-                </option>
-              ))
-            )}
-          </select>
-        )}
+            )
+          ) : voices.length === 0 ? (
+            <option>(chưa cài giọng tiếng Việt)</option>
+          ) : (
+            voices.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.label}
+              </option>
+            ))
+          )}
+        </select>
 
         <label>ÂM LƯỢNG &nbsp; {cfg.volume}%</label>
         <input

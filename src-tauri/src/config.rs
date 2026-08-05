@@ -62,12 +62,11 @@ pub struct Config {
     /// Số câu trước gửi kèm cho LLM để chọn xưng hô nhất quán. 0 = tắt (rẻ token, nhanh hơn).
     pub llm_context_lines: usize,
 
-    /// "windows" (Windows.Media.SpeechSynthesis, có sẵn) | "piper" (neural, ~82 MB) |
-    /// "vieneu" (neural 48 kHz đọc lẫn Anh–Việt, ~750 MB + 1,3 GB RAM).
-    /// Chọn engine chưa tải xong thì vẫn đọc bằng giọng Windows, không câm.
+    /// "windows" (Windows.Media.SpeechSynthesis, có sẵn) |
+    /// "vieneu" (neural 48 kHz đọc lẫn Anh–Việt, ~560 MB + 1,3 GB RAM).
+    /// Chọn "vieneu" mà chưa cài xong thì vẫn đọc bằng giọng Windows, không câm.
     pub tts_engine: String,
-    /// Dùng cho "windows" (tên giọng WinRT) và "vieneu" (một trong 14 giọng có sẵn).
-    /// Piper chỉ có một giọng (vi_VN-vais1000) nên bỏ qua field này.
+    /// Tên giọng WinRT (engine "windows") hoặc một trong 14 giọng của VieNeu.
     pub voice_name: String,
     /// bội số 0.5..2.0
     pub speed: f64,
@@ -104,8 +103,8 @@ impl Default for Config {
             llm_model: "llama-3.3-70b-versatile".into(),
             llm_api_key: String::new(),
             llm_context_lines: 3,
-            // Mặc định giọng có sẵn: cài xong là chạy được ngay, không bắt tải 82 MB mới nghe
-            // được câu đầu tiên. Ai muốn giọng tự nhiên hơn thì tự bật Piper trên UI.
+            // Mặc định giọng có sẵn: cài xong là chạy được ngay, không bắt tải 560 MB mới
+            // nghe được câu đầu. Ai muốn giọng tự nhiên hơn thì tự bật VieNeu trên UI.
             tts_engine: "windows".into(),
             voice_name: "Microsoft An".into(),
             speed: 1.0,
@@ -206,9 +205,9 @@ mod tests {
         assert_eq!(c.volume, 40);
         assert_eq!(c.interval_ms, Config::default().interval_ms);
         assert_eq!(c.min_clean_ratio, 0.6);
-        // config có trước khi thêm Piper -> phải về giọng Windows, KHÔNG được rơi vào chuỗi
-        // rỗng rồi đọc câm (tts.rs so bằng == "piper" nên chuỗi lạ vẫn an toàn, nhưng UI
-        // sẽ hiện dropdown trống).
+        // config có trước khi thêm engine neural -> phải về giọng Windows, KHÔNG được rơi vào
+        // chuỗi rỗng rồi đọc câm (tts.rs so bằng == "vieneu" nên chuỗi lạ vẫn an toàn, nhưng
+        // UI sẽ hiện dropdown trống).
         assert_eq!(c.tts_engine, "windows");
     }
 

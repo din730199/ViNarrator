@@ -154,15 +154,24 @@ impl Narrator {
         self.reload.dedup.store(true, Ordering::Relaxed);
     }
 
-    /// engine: "windows" | "piper".
+    /// engine: "windows" | "piper" | "vieneu".
     pub fn set_tts_engine(&self, engine: String) {
         self.edit(|c| c.tts_engine = engine.clone());
         self.tts.set_params(Some(engine), None, None, None);
+        self.tts.prewarm();
     }
 
     pub fn set_voice(&self, name: String) {
         self.edit(|c| c.voice_name = name.clone());
         self.tts.set_params(None, Some(name), None, None);
+        // Đổi giọng VieNeu = dựng lại tiến trình con (~10s). Làm ngay lúc rảnh thay vì để
+        // câu tiếp theo gánh.
+        self.tts.prewarm();
+    }
+
+    /// Vừa cài xong runtime -> dựng sẵn engine luôn.
+    pub fn prewarm(&self) {
+        self.tts.prewarm();
     }
 
     pub fn set_speed(&self, speed: f64) {

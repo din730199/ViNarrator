@@ -1,4 +1,4 @@
-//! VieNeu-TTS v3 Turbo — giọng neural 48 kHz, đọc lẫn Anh–Việt, chạy bằng tiến trình con Python.
+﻿//! VieNeu-TTS v3 Turbo — giọng neural 48 kHz, đọc lẫn Anh–Việt, chạy bằng tiến trình con Python.
 //!
 //! **Vì sao đáng làm dù nặng hơn Piper:** `infer_stream` (không có trong model card) cho mẩu
 //! tiếng đầu sau **~0,2s**, và model được huấn luyện trên ~10.000 giờ Anh–Việt nên đọc chữ
@@ -30,9 +30,10 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::piper::{BELOW_NORMAL, NO_WINDOW};
+use crate::runtime::{self, BELOW_NORMAL, NO_WINDOW};
 use crate::wave_out::{self, WaveOut};
 
 /// Ghim phiên bản: bản `latest` có thể đổi hành vi dòng lệnh mà không báo, còn URL bản cũ thì
@@ -54,8 +55,11 @@ const DEPS: [&str; 8] = [
 /// 2 luồng: đo được vừa ít nhân hơn (1,50 so với 1,93) vừa TỐN ÍT CPU HƠN (5,89 so với 8,55
 /// CPU-giây/câu, bớt đồng bộ luồng) mà độ trễ gần như không đổi.
 const THREADS: &str = "2";
-/// Nạp model + chạy nóng mất ~9,5s; lần đầu đời còn phải tải 285 MB model nên rộng tay.
-const READY_TIMEOUT: Duration = Duration::from_secs(900);
+/// Lúc CÀI: lần đầu đời còn phải tải 285 MB model nên rộng tay.
+const READY_TIMEOUT_CAI: Duration = Duration::from_secs(900);
+/// Lúc CHẠY: model đã có sẵn (`ensure_runtime` kéo rồi), nạp + chạy nóng đo được ~9,5s.
+/// Không dùng chung mức 900s: worker kẹt sẽ treo luồng đọc 15 phút mà không ai biết.
+const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// Mẩu chậm nhất đo được 0,24s. 60s là để phát hiện chết hẳn, không phải để chờ.
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -88,6 +92,24 @@ pub fn ready() -> bool {
     marker().exists() && venv_py().exists() && worker_py().exists()
 }
 
+/// Ghi lại `worker.py` từ bản nhúng trong exe.
+///
+/// **Phải gọi ở MỌI lần dựng worker, không chỉ lúc cài.** `ensure_runtime` thoát sớm khi
+/// `ready()` nên nếu chỉ ghi ở đó thì cập nhật app xong vẫn chạy worker.py của bản cũ — đã
+/// dính đúng lỗi này: sửa worker để nó báo danh sách giọng, cài lại app, worker cũ vẫn chạy
+/// và không có giọng nào. Ghi vài KB mỗi lần dựng là rẻ hơn nhiều so với việc gỡ lỗi đó.
+fn sync_worker() -> Result<(), String> {
+    std::fs::write(worker_py(), include_str!("vieneu_worker.py")).map_err(|e| e.to_string())
+}
+
+/// Danh sách giọng do CHÍNH model báo, ghi ra `voices.txt` lúc worker khởi động.
+/// Rỗng = chưa cài xong; UI tự ẩn dropdown giọng.
+pub fn voices() -> Vec<String> {
+    std::fs::read_to_string(dir().join("voices.txt"))
+        .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect())
+        .unwrap_or_default()
+}
+
 /// Chạy uv với cache + thư mục Python nằm GỌN trong thư mục của app: không rải rác vào
 /// `%APPDATA%` của người dùng, gỡ app là xoá sạch một chỗ.
 fn uv(args: &[&std::ffi::OsStr]) -> Result<(), String> {
@@ -110,16 +132,18 @@ fn uv(args: &[&std::ffi::OsStr]) -> Result<(), String> {
 /// Tải uv + CPython riêng + gói rồi chạy nóng một lần để kéo nốt 285 MB model.
 /// Đo được: **65 giây, 561 MB trên đĩa** (uv 46 + CPython 60 + venv 163 + model 285) trên
 /// mạng nhanh. Chỉ tốn ở lần đầu bật; gọi lại khi đã xong thì trả về ngay.
-pub fn ensure_runtime() -> Result<(), String> {
+pub fn ensure_runtime(bao: runtime::BaoTien) -> Result<(), String> {
     if ready() {
         return Ok(());
     }
     let d = dir();
     std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    // 561 MB đích + cache uv trung gian + zip chưa xoá -> xin 1,5 GB cho chắc.
+    runtime::du_dia(&d, 1500)?;
 
     if !uv_exe().exists() {
         let zip = d.join("uv.zip");
-        crate::piper::fetch(UV_URL, &zip)?;
+        runtime::fetch(UV_URL, &zip, "uv", bao)?;
         let st = Command::new("tar")
             .arg("-xf")
             .arg(&zip)
@@ -138,6 +162,7 @@ pub fn ensure_runtime() -> Result<(), String> {
     }
 
     if !venv_py().exists() {
+        bao("Đang tải Python riêng cho VieNeu…".into());
         // only-managed: BẮT uv tự tải CPython. Không có cờ này nó sẽ vớ Python cài sẵn của
         // máy (đã thấy nó chọn Python 3.12 của người dùng) -> môi trường không xác định.
         uv(&[
@@ -150,6 +175,7 @@ pub fn ensure_runtime() -> Result<(), String> {
         ])?;
     }
 
+    bao("Đang cài gói VieNeu…".into());
     let py = venv_py();
     uv(&["pip".as_ref(), "install".as_ref(), "--python".as_ref(), py.as_os_str(),
          "--no-deps".as_ref(), "vieneu".as_ref()])?;
@@ -158,11 +184,13 @@ pub fn ensure_runtime() -> Result<(), String> {
     args.extend(DEPS.iter().map(|s| s.as_ref() as &std::ffi::OsStr));
     uv(&args)?;
 
-    std::fs::write(worker_py(), include_str!("vieneu_worker.py")).map_err(|e| e.to_string())?;
+    sync_worker()?;
 
     // Chạy nóng một lần: kéo nốt ~285 MB model NGAY BÂY GIỜ, lúc UI đang báo "đang cài",
-    // thay vì để câu đọc đầu tiên của người dùng treo mấy phút.
-    VieNeu::start("").map(|_| ())?;
+    // thay vì để câu đọc đầu tiên của người dùng treo mấy phút. Dùng mức chờ CÀI (900s) vì
+    // đây là lần tải model duy nhất. Cũng là lúc `voices.txt` được ghi ra.
+    bao("Đang tải model VieNeu (~285 MB)…".into());
+    VieNeu::start_timeout("", READY_TIMEOUT_CAI).map(|_| ())?;
 
     std::fs::write(marker(), "ok").map_err(|e| e.to_string())?;
     // Cache của uv chỉ dùng lúc cài, giữ lại tốn vài trăm MB vô ích.
@@ -173,6 +201,7 @@ pub fn ensure_runtime() -> Result<(), String> {
 enum Tin {
     Chunk,
     Xong,
+    Giong(String),
     Loi(String),
 }
 
@@ -195,12 +224,19 @@ pub struct VieNeu {
     /// luôn khớp vì mỗi "C" là đúng một file.
     seq: u32,
     voice: String,
+    stderr_cuoi: Arc<Mutex<String>>,
 }
 
 impl VieNeu {
-    /// Dựng tiến trình con và CHỜ nó báo READY (~9,5s, hoặc vài phút ở lần đầu đời vì phải
-    /// tải model). Gọi từ luồng TTS nên chỗ gọi phải chấp nhận bị chặn.
+    /// Dựng tiến trình con và CHỜ nó báo READY (~9,5s). Gọi từ luồng TTS nên chỗ gọi phải
+    /// chấp nhận bị chặn — vì vậy [`crate::tts`] hâm nóng sẵn lúc người dùng chọn engine.
     pub fn start(voice: &str) -> Result<Self, String> {
+        Self::start_timeout(voice, READY_TIMEOUT)
+    }
+
+    fn start_timeout(voice: &str, cho: Duration) -> Result<Self, String> {
+        // Đồng bộ worker.py TRƯỚC mỗi lần dựng — xem `sync_worker`.
+        sync_worker()?;
         let d = dir();
         let out_dir = d.join("out");
         let _ = std::fs::remove_dir_all(&out_dir);
@@ -218,20 +254,26 @@ impl VieNeu {
             .current_dir(&d)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .creation_flags(NO_WINDOW | BELOW_NORMAL)
             .spawn()
             .map_err(|e| format!("không chạy được worker VieNeu: {e}"))?;
 
         let stdin = child.stdin.take().ok_or("không lấy được stdin của worker")?;
         let stdout = child.stdout.take().ok_or("không lấy được stdout của worker")?;
+        let stderr_cuoi = match child.stderr.take() {
+            Some(e) => runtime::log_stderr("VieNeu", e),
+            None => Arc::new(Mutex::new(String::new())),
+        };
         let (tx, tin) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let t = match line.trim() {
+                let l = line.trim();
+                let t = match l {
                     "C" => Tin::Chunk,
                     "E" | "READY" => Tin::Xong,
-                    l if l.starts_with('X') => Tin::Loi(l.trim_start_matches("X ").to_string()),
+                    _ if l.starts_with("V ") => Tin::Giong(l[2..].to_string()),
+                    _ if l.starts_with('X') => Tin::Loi(l.trim_start_matches("X ").to_string()),
                     _ => continue,
                 };
                 if tx.send(t).is_err() {
@@ -240,14 +282,37 @@ impl VieNeu {
             }
         });
 
-        let me = Self { child, stdin, tin, out_dir, seq: 0, voice: voice.to_string() };
-        // READY dùng chung nhánh Xong: chờ đúng một tin trước khi coi là dựng xong.
-        match me.tin.recv_timeout(READY_TIMEOUT) {
-            Ok(Tin::Xong) => Ok(me),
-            Ok(Tin::Loi(e)) => Err(format!("worker lỗi lúc khởi động: {e}")),
-            Ok(Tin::Chunk) => Err("worker trả tin lạ lúc khởi động".into()),
-            Err(_) => Err("worker VieNeu không khởi động được (chết hoặc quá lâu)".into()),
+        let me = Self {
+            child,
+            stdin,
+            tin,
+            out_dir,
+            seq: 0,
+            voice: voice.to_string(),
+            stderr_cuoi,
+        };
+        // Worker in hết "V <giọng>" rồi mới tới READY. Gom giọng trên đường chờ.
+        let mut giong = Vec::new();
+        loop {
+            match me.tin.recv_timeout(cho) {
+                Ok(Tin::Giong(g)) => giong.push(g),
+                // READY dùng chung nhánh Xong.
+                Ok(Tin::Xong) => break,
+                Ok(Tin::Loi(e)) => return Err(format!("worker lỗi lúc khởi động: {e}")),
+                Ok(Tin::Chunk) => return Err("worker trả tin lạ lúc khởi động".into()),
+                Err(_) => {
+                    return Err(runtime::kem_stderr(
+                        "worker VieNeu không khởi động được",
+                        &me.stderr_cuoi,
+                    ))
+                }
+            }
         }
+        if !giong.is_empty() {
+            // Ghi ra đĩa để UI đọc được mà KHÔNG cần dựng tiến trình Python (tốn ~10s).
+            let _ = std::fs::write(dir().join("voices.txt"), giong.join("\n"));
+        }
+        Ok(me)
     }
 
     pub fn voice(&self) -> &str {
@@ -297,7 +362,7 @@ impl VieNeu {
                         eprintln!("[VieNeu] không đọc được {}", f.display());
                         continue;
                     };
-                    crate::piper::apply_gain(&mut wav, volume);
+                    runtime::apply_gain(&mut wav, volume);
                     let Some((sr, pcm)) = wave_out::split_wav(&wav) else {
                         eprintln!("[VieNeu] mẩu không phải WAV hợp lệ");
                         continue;
@@ -316,7 +381,13 @@ impl VieNeu {
                 }
                 Ok(Tin::Xong) => break Ok(doc),
                 Ok(Tin::Loi(e)) => break Err(e),
-                Err(_) => break Err("worker VieNeu không trả lời (chết hoặc treo)".into()),
+                Ok(Tin::Giong(_)) => continue, // chỉ có lúc khởi động, ở đây thì bỏ qua
+                Err(_) => {
+                    break Err(runtime::kem_stderr(
+                        "worker VieNeu không trả lời (chết hoặc treo)",
+                        &self.stderr_cuoi,
+                    ))
+                }
             }
         };
         // Chờ phát hết trước khi trả về, nếu không câu sau sẽ chồng lên câu này.
@@ -347,10 +418,15 @@ mod tests {
     #[test]
     #[ignore]
     fn duong_that_cai_va_doc_duoc() {
-        ensure_runtime().expect("cài runtime VieNeu");
+        ensure_runtime(&runtime::im).expect("cài runtime VieNeu");
         assert!(ready(), "ensure_runtime() xong nhưng ready() vẫn false");
 
         let mut v = VieNeu::start("").expect("dựng worker");
+        // Worker phải báo danh sách giọng THẬT của model trước khi READY. Rỗng nghĩa là
+        // worker.py trên đĩa đã cũ (bug từng gặp) hoặc giao thức lệch.
+        let g = voices();
+        assert!(g.len() >= 5, "chỉ nhận được {} giọng: {g:?}", g.len());
+
         let stop = AtomicBool::new(false);
         for cau in ["Coi chừng, có một con quái vật phía sau",
                     "Server Minecraft của tôi bị sập lúc ba giờ sáng"] {

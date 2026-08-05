@@ -42,6 +42,11 @@ impl SpeechQueue {
         self.inner.lock().unwrap().dq.pop_front()
     }
 
+    /// Không còn câu nào chờ đọc — dùng để biết lúc nào rảnh mà hâm nóng engine.
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().unwrap().dq.is_empty()
+    }
+
     pub fn clear(&self) {
         self.inner.lock().unwrap().dq.clear();
     }

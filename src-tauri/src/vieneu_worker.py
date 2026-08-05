@@ -4,9 +4,11 @@ File này được nhúng vào exe (`include_str!`) và ghi ra đĩa lúc cài r
 
 Giao thức (một dòng = một lệnh, cùng khuôn với piper.exe để dùng lại code sẵn có):
     vào : <câu cần đọc>\\n
-    ra  : "C\\n"          vừa ghi xong một mẩu tiếng ra <out>/NNNN.wav
-          "E\\n"          hết câu
-          "X <lý do>\\n"  câu này hỏng (KHÔNG chết tiến trình)
+    ra  : "V <tên giọng>\\n" liệt kê giọng có sẵn, in hết TRƯỚC "READY"
+          "READY\\n"       nạp xong model, chạy nóng xong, sẵn sàng nhận câu
+          "C\\n"           vừa ghi xong một mẩu tiếng ra <out>/NNNN.wav
+          "E\\n"           hết câu
+          "X <lý do>\\n"   câu này hỏng (KHÔNG chết tiến trình)
 
 Vì sao ghi ra FILE chứ không đẩy byte qua stdout: trộn nhị phân với văn bản trên stdout rất
 dễ sai, và bên Rust đã có sẵn khuôn "đọc file rồi xoá" của Piper. Bên Rust tự đếm số thứ tự
@@ -42,6 +44,10 @@ def main():
     from vieneu import Vieneu
 
     tts = Vieneu(backend="onnx", threads=THREADS)
+    # Báo danh sách giọng THẬT của model thay vì để phía Rust chép cứng — model đổi danh
+    # sách thì UI tự đúng theo.
+    for ten in tts._preset_voices:
+        print(f"V {ten}", flush=True)
     giong = GIONG if GIONG in tts._preset_voices else list(tts._preset_voices)[0]
     # Chạy nóng TRƯỚC khi báo READY: lượt đầu tốn ~1,5s dựng đồ thị, và lần chạy đầu tiên
     # của máy còn phải tải ~285 MB model. Câu thật của người dùng không nên gánh cái đó.

@@ -4,7 +4,7 @@ mod dedup;
 mod narrator;
 mod ocr;
 mod oneocr;
-mod piper;
+mod runtime;
 mod speech_queue;
 mod translate;
 mod tts;
@@ -98,42 +98,34 @@ fn set_tuning(
     n.config()
 }
 
-/// engine: "windows" | "piper" | "vieneu". Lần đầu chọn engine neural phải tải khá nhiều —
-/// làm ở thread riêng và báo qua event, KHÔNG chặn command: chặn ở đây thì UI đơ suốt thời
-/// gian tải. Đổi config trước, tải sau: tải hỏng thì `tts.rs` tự lùi về giọng Windows.
+/// engine: "windows" | "vieneu". Lần đầu chọn VieNeu phải cài ~560 MB — làm ở thread riêng và
+/// báo qua event, KHÔNG chặn command: chặn ở đây thì UI đơ suốt thời gian cài.
+/// Đổi config trước, cài sau: cài hỏng thì `tts.rs` tự lùi về giọng Windows.
 #[tauri::command]
 fn set_tts_engine(app: AppHandle, n: tauri::State<Narrator>, engine: String) -> Config {
     n.set_tts_engine(engine.clone());
-    let can_tai = match engine.as_str() {
-        "piper" => !piper::ready(),
-        "vieneu" => !vieneu::ready(),
-        _ => false,
-    };
-    if !can_tai {
+    if engine != "vieneu" || vieneu::ready() {
         return n.config();
     }
     std::thread::spawn(move || {
-        let (nhan, ket_qua) = if engine == "vieneu" {
-            // 561 MB trên đĩa: uv 46 + CPython 60 + gói 163 + model 285. Đo được ~65s trên
-            // mạng nhanh, nhưng mạng chậm thì vài phút.
-            let _ = app.emit(
-                "status",
-                "Đang cài giọng VieNeu (~560 MB, có thể vài phút, chỉ lần đầu)...",
-            );
-            ("VieNeu", vieneu::ensure_runtime())
-        } else {
-            let _ = app.emit("status", "Đang tải giọng Piper (~82 MB, chỉ lần đầu)...");
-            ("Piper", piper::ensure_runtime())
+        // Tiến độ cài đi thẳng ra thanh trạng thái: 560 MB mà thanh đứng im thì người dùng
+        // tưởng app treo.
+        let bao = |s: String| {
+            let _ = app.emit("status", s);
         };
-        match ket_qua {
+        // 561 MB trên đĩa: uv 46 + CPython 60 + gói 163 + model 285.
+        bao("Đang cài giọng VieNeu (~560 MB, chỉ lần đầu)…".into());
+        match vieneu::ensure_runtime(&bao) {
             Ok(()) => {
-                let _ = app.emit("status", format!("Đã cài xong giọng {nhan} — sẵn sàng"));
+                bao("Đã cài xong giọng VieNeu — đang chuẩn bị…".into());
                 let _ = app.emit("warn", String::new());
+                // Dựng sẵn engine ngay, đừng để câu đọc đầu tiên gánh ~10s nạp model.
+                app.state::<Narrator>().prewarm();
             }
             Err(e) => {
                 let _ = app.emit(
                     "warn",
-                    format!("Không cài được {nhan}: {e} — tạm đọc bằng giọng Windows"),
+                    format!("Không cài được VieNeu: {e} — tạm đọc bằng giọng Windows"),
                 );
             }
         }
@@ -141,14 +133,16 @@ fn set_tts_engine(app: AppHandle, n: tauri::State<Narrator>, engine: String) -> 
     n.config()
 }
 
-/// Runtime của engine neural đã có sẵn chưa — UI dùng để biết có phải báo "sẽ tải" hay không.
+/// 14 giọng của VieNeu, lấy từ chính model (worker ghi ra lúc cài) chứ không chép cứng ở UI.
+#[tauri::command]
+fn vieneu_voices() -> Vec<String> {
+    vieneu::voices()
+}
+
+/// Runtime VieNeu đã cài sẵn chưa — UI dùng để biết có phải báo "sẽ tải 560 MB" hay không.
 #[tauri::command]
 fn engine_ready(engine: String) -> bool {
-    match engine.as_str() {
-        "piper" => piper::ready(),
-        "vieneu" => vieneu::ready(),
-        _ => true,
-    }
+    engine != "vieneu" || vieneu::ready()
 }
 
 #[tauri::command]
@@ -277,6 +271,7 @@ pub fn run() {
             set_tuning,
             set_tts_engine,
             engine_ready,
+            vieneu_voices,
             set_voice,
             set_speed,
             set_volume,

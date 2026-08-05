@@ -1,13 +1,14 @@
-//! TtsEngine — đọc tuần tự, ba giọng để chọn:
+//! TtsEngine — đọc tuần tự, hai giọng để chọn:
 //! - **windows** — Windows.Media.SpeechSynthesis offline (Microsoft An). Có sẵn, 0 MB.
-//! - **piper** — giọng neural VITS, xem [`crate::piper`]. Mặc định khi muốn giọng máy nhẹ.
-//! - **vieneu** — giọng neural 48 kHz đọc lẫn Anh–Việt, xem [`crate::vieneu`]. Nặng nhất.
+//! - **vieneu** — giọng neural 48 kHz đọc lẫn Anh–Việt, xem [`crate::vieneu`].
 //!
-//! Hai engine đầu trả WAV đầy đủ rồi phát một lần. VieNeu **phát theo mẩu**: chờ cả câu thì
-//! mất 3,5s, phát từng mẩu thì nghe thấy tiếng sau ~0,2s. Vì vậy nó tự cầm khâu phát chứ
-//! không trả WAV về như hai cái kia.
+//! Giọng Windows trả WAV đầy đủ rồi phát một lần bằng `PlaySound`. VieNeu **phát theo mẩu**:
+//! chờ cả câu thì mất 3,5s, phát từng mẩu thì nghe thấy tiếng sau ~0,2s. Vì vậy nó tự cầm
+//! khâu phát (hàng đợi `waveOut` liền mạch) chứ không trả WAV về đây.
 //!
-//! Worker thread + PlaySound đồng bộ => đọc tuần tự, không chồng tiếng.
+//! Giọng Windows cũng là **lưới an toàn**: VieNeu hỏng ở bất kỳ đâu thì câu đó vẫn ra tiếng.
+//!
+//! Worker thread + phát đồng bộ => đọc tuần tự, không chồng tiếng.
 //! Chống trùng + cap qua SpeechQueue.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,7 +21,6 @@ use windows::Storage::Streams::DataReader;
 use windows::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_PURGE, SND_SYNC};
 
 use crate::ensure_com;
-use crate::piper::{self, Piper};
 use crate::speech_queue::SpeechQueue;
 use crate::vieneu::{self, VieNeu};
 
@@ -87,6 +87,10 @@ pub struct TtsEngine {
     /// Bấm DỪNG giữa lúc VieNeu đang đọc dở một câu. `PlaySoundW(SND_PURGE)` chỉ cắt mẩu
     /// ĐANG phát; không có cờ này thì các mẩu còn lại của câu đó vẫn lần lượt phát tiếp.
     interrupt: Arc<AtomicBool>,
+    /// Dựng sẵn engine lúc RẢNH thay vì đợi câu đầu tiên. VieNeu tốn ~10s nạp model; để
+    /// đến lúc có câu mới dựng thì người dùng câm 10s VÀ mất luôn 2-3 câu phụ đề trôi qua
+    /// (hàng đợi chỉ giữ 3).
+    prewarm: Arc<AtomicBool>,
 }
 
 impl TtsEngine {
@@ -97,23 +101,36 @@ impl TtsEngine {
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             quit: Arc::new(AtomicBool::new(false)),
             interrupt: Arc::new(AtomicBool::new(false)),
+            prewarm: Arc::new(AtomicBool::new(false)),
         };
-        let (queue, params, wake, quit, interrupt) = (
+        let (queue, params, wake, quit, interrupt, prewarm) = (
             engine.queue.clone(),
             engine.params.clone(),
             engine.wake.clone(),
             engine.quit.clone(),
             engine.interrupt.clone(),
+            engine.prewarm.clone(),
         );
         std::thread::spawn(move || {
             ensure_com();
             // Giữ nguyên synthesizer giữa các câu: dựng mới + `AllVoices()` mỗi câu là phí,
-            // giọng chỉ đổi khi người dùng bấm dropdown. Piper cũng vậy: tiến trình con giữ
-            // sống để khỏi nạp lại model 60 MB (0,48s) ở mỗi câu.
+            // giọng chỉ đổi khi người dùng bấm dropdown. VieNeu cũng vậy: tiến trình con giữ
+            // sống để khỏi nạp lại model ở mỗi câu (~10s).
             let mut speaker: Option<Speaker> = None;
-            let mut piper: Option<Piper> = None;
             let mut vieneu: Option<VieNeu> = None;
             while !quit.load(Ordering::Relaxed) {
+                // Hâm nóng lúc RẢNH: chỉ chạy khi hàng đợi trống nên không làm trễ câu nào.
+                if prewarm.swap(false, Ordering::Relaxed) && queue.is_empty() {
+                    let p = params.lock().unwrap().clone();
+                    if p.engine == "vieneu" && vieneu::ready() && vieneu_cache_can_dung(&vieneu, &p)
+                    {
+                        match VieNeu::start(&p.voice_name) {
+                            Ok(v) => vieneu = Some(v),
+                            // Không sao: câu đầu sẽ thử lại rồi lùi về engine khác nếu vẫn hỏng.
+                            Err(e) => eprintln!("[TTS] hâm nóng VieNeu không được: {e}"),
+                        }
+                    }
+                }
                 let Some(text) = queue.try_dequeue() else {
                     let (lock, cv) = &*wake;
                     let mut signaled = lock.lock().unwrap();
@@ -127,7 +144,7 @@ impl TtsEngine {
                 // được để nó làm câm luôn câu kế tiếp.
                 interrupt.store(false, Ordering::Relaxed);
                 let p = params.lock().unwrap().clone();
-                if let Err(e) = doc(&mut speaker, &mut piper, &mut vieneu, &p, &text, &interrupt) {
+                if let Err(e) = doc(&mut speaker, &mut vieneu, &p, &text, &interrupt) {
                     eprintln!("[TTS] lỗi: {e}");
                     speaker = None; // engine hỏng -> dựng lại ở câu sau
                 }
@@ -178,6 +195,13 @@ impl TtsEngine {
         }
     }
 
+    /// Bảo luồng đọc dựng sẵn engine ngay khi rảnh. Gọi lúc người dùng vừa chọn engine hoặc
+    /// vừa cài xong — KHÔNG chặn, việc dựng xảy ra ở luồng đọc.
+    pub fn prewarm(&self) {
+        self.prewarm.store(true, Ordering::Relaxed);
+        self.notify();
+    }
+
     pub fn shutdown(&self) {
         self.quit.store(true, Ordering::Relaxed);
         self.notify();
@@ -226,14 +250,13 @@ fn speaker_for<'a>(
 
 /// Đọc một câu bằng engine đang chọn, tự lo cả khâu phát.
 ///
-/// VieNeu phát theo mẩu nên không thể trả WAV về như hai engine kia — nó nằm riêng ở đây,
-/// còn `synth` bên dưới chỉ lo hai engine "một WAV một câu".
+/// VieNeu phát theo mẩu nên không trả WAV về — nó nằm riêng ở đây, còn `synthesize` bên dưới
+/// lo giọng Windows kiểu "một WAV một câu".
 ///
-/// Trục trặc ở tầng nào cũng **lùi xuống tầng dưới cho chính câu đó**: nghe thấy giọng lạ thì
+/// VieNeu trục trặc thì **lùi về giọng Windows cho chính câu đó**: nghe thấy giọng lạ thì
 /// người dùng còn biết đường đi kiểm tra, chứ im lặng thì tưởng app hỏng hẳn.
 fn doc(
     speaker: &mut Option<Speaker>,
-    piper_cache: &mut Option<Piper>,
     vieneu_cache: &mut Option<VieNeu>,
     p: &Params,
     text: &str,
@@ -243,17 +266,22 @@ fn doc(
         match speak_vieneu(vieneu_cache, p, text, stop) {
             Ok(()) => return Ok(()),
             Err(e) => {
-                eprintln!("[TTS] VieNeu lỗi: {e} — câu này đọc bằng giọng khác");
+                eprintln!("[TTS] VieNeu lỗi: {e} — câu này đọc bằng giọng Windows");
                 *vieneu_cache = None; // dựng lại tiến trình con ở câu sau
             }
         }
     } else if vieneu_cache.is_some() {
-        // Đổi sang engine khác -> thả worker Python, nó ăn tới ~1,3 GB RAM.
+        // Đổi sang giọng Windows -> thả worker Python, nó ăn tới ~1,3 GB RAM.
         *vieneu_cache = None;
     }
-    let wav = synth(speaker, piper_cache, p, text)?;
+    let wav = synthesize(speaker, p, text).map_err(|e| e.to_string())?;
     play_blocking(&wav);
     Ok(())
+}
+
+/// Có cần dựng (lại) worker VieNeu không: chưa có, hoặc đang giữ worker của giọng khác.
+fn vieneu_cache_can_dung(cache: &Option<VieNeu>, p: &Params) -> bool {
+    cache.as_ref().is_none_or(|v| v.voice() != p.voice_name)
 }
 
 fn speak_vieneu(
@@ -263,49 +291,13 @@ fn speak_vieneu(
     stop: &AtomicBool,
 ) -> Result<(), String> {
     // Giọng là tham số dòng lệnh lúc spawn -> đổi giọng phải dựng lại tiến trình.
-    if cache.as_ref().is_some_and(|v| v.voice() != p.voice_name) {
+    if vieneu_cache_can_dung(cache, p) {
         *cache = None;
-    }
-    if cache.is_none() {
         *cache = Some(VieNeu::start(&p.voice_name)?);
     }
     // VieNeu tự cầm khâu phát (hàng đợi waveOut liền mạch) nên không trả WAV về đây.
     // Số giây trả về chỉ dùng cho test đo khe hở.
     cache.as_mut().expect("vừa gán ở trên").speak(text, p.volume, stop).map(|_| ())
-}
-
-/// Hai engine trả "một WAV cho cả câu". Piper trục trặc thì lùi về giọng Windows.
-fn synth(
-    speaker: &mut Option<Speaker>,
-    piper_cache: &mut Option<Piper>,
-    p: &Params,
-    text: &str,
-) -> Result<Vec<u8>, String> {
-    if p.engine == "piper" && piper::ready() {
-        match synth_piper(piper_cache, p, text) {
-            Ok(wav) => return Ok(wav),
-            Err(e) => {
-                eprintln!("[TTS] Piper lỗi: {e} — câu này đọc bằng giọng Windows");
-                *piper_cache = None; // dựng lại tiến trình con ở câu sau
-            }
-        }
-    } else if piper_cache.is_some() {
-        *piper_cache = None; // đổi sang giọng Windows -> thả tiến trình con, khỏi ăn RAM
-    }
-    synthesize(speaker, p, text).map_err(|e| e.to_string())
-}
-
-fn synth_piper(cache: &mut Option<Piper>, p: &Params, text: &str) -> Result<Vec<u8>, String> {
-    // length_scale là tham số dòng lệnh lúc spawn -> kéo thanh tốc độ phải dựng lại tiến trình.
-    if cache.as_ref().is_some_and(|x| x.speed() != p.speed) {
-        *cache = None;
-    }
-    if cache.is_none() {
-        *cache = Some(Piper::start(p.speed)?);
-    }
-    let mut wav = cache.as_mut().expect("vừa gán ở trên").synth(text)?;
-    piper::apply_gain(&mut wav, p.volume);
-    Ok(wav)
 }
 
 fn synthesize(
@@ -343,39 +335,31 @@ mod tests {
         }
     }
 
-    fn sample_rate(wav: &[u8]) -> u32 {
-        u32::from_le_bytes(wav[24..28].try_into().unwrap())
-    }
-
-    /// Phân biệt hai engine bằng TẦN SỐ LẤY MẪU chứ không tin lời hàm: Piper 22,05 kHz,
-    /// giọng Windows 16 kHz. Nếu `synth` lỡ gọi nhầm engine thì con số này lộ ra ngay.
-    /// Cần đã tải Piper (chạy `piper::tests::duong_that_tai_va_doc_duoc` trước).
+    /// Chọn giọng Windows thì **không được** dựng worker VieNeu (nó ăn ~1,3 GB RAM).
     #[test]
     #[ignore]
-    fn chon_dung_engine_theo_config() {
+    fn giong_windows_khong_dung_worker_vieneu() {
         crate::ensure_com();
-        assert!(piper::ready(), "chưa tải Piper — chạy test duong_that_tai_va_doc_duoc trước");
-        let (mut sp, mut pi) = (None, None);
-
-        let w = synth(&mut sp, &mut pi, &params("piper"), "Cây cầu cũ đang sụp đổ").unwrap();
-        assert_eq!(sample_rate(&w), 22_050, "chọn piper nhưng không ra tiếng của piper");
-
-        let w = synth(&mut sp, &mut pi, &params("windows"), "Cây cầu cũ đang sụp đổ").unwrap();
-        assert_ne!(sample_rate(&w), 22_050, "chọn giọng Windows nhưng vẫn ra tiếng piper");
-        // Đổi về giọng Windows phải THẢ tiến trình con, không để nó ngồi ăn RAM.
-        assert!(pi.is_none());
+        let (mut sp, mut vn) = (None, None);
+        let stop = AtomicBool::new(false);
+        doc(&mut sp, &mut vn, &params("windows"), "Cây cầu cũ đang sụp đổ", &stop)
+            .expect("đọc bằng giọng Windows");
+        assert!(vn.is_none(), "chọn giọng Windows mà vẫn dựng worker VieNeu");
+        assert!(sp.is_some(), "không dựng synthesizer của Windows");
     }
 
-    /// Lưới an toàn: Piper lỗi thì câu đó phải ra bằng giọng Windows, KHÔNG được im.
-    /// Câu rỗng là cách ép `Piper::synth` trả Err mà không phải phá hỏng file cài.
+    /// **Lưới an toàn:** VieNeu lỗi thì câu đó phải ra bằng giọng Windows, KHÔNG được im.
+    ///
+    /// Câu toàn khoảng trắng ép `VieNeu::speak` trả Err mà không phải phá file cài. Chốt bằng
+    /// việc synthesizer Windows ĐƯỢC dựng: không có nhánh lùi thì `doc` trả Err và `sp` vẫn None.
     #[test]
     #[ignore]
-    fn piper_loi_thi_lui_ve_giong_windows() {
+    fn vieneu_loi_thi_lui_ve_giong_windows() {
         crate::ensure_com();
-        assert!(piper::ready(), "chưa tải Piper");
-        let (mut sp, mut pi) = (None, None);
-        let w = synth(&mut sp, &mut pi, &params("piper"), "   ").expect("phải có tiếng, không Err");
-        assert_eq!(&w[..4], b"RIFF");
-        assert_ne!(sample_rate(&w), 22_050, "lẽ ra phải là giọng Windows");
+        assert!(vieneu::ready(), "chưa cài VieNeu — chạy vieneu::tests::duong_that... trước");
+        let (mut sp, mut vn) = (None, None);
+        let stop = AtomicBool::new(false);
+        doc(&mut sp, &mut vn, &params("vieneu"), "   ", &stop).expect("phải ra tiếng, không Err");
+        assert!(sp.is_some(), "VieNeu lỗi mà không lùi về giọng Windows — câu này bị câm");
     }
 }
