@@ -52,8 +52,8 @@ windows = { version = "0.62", features = [
   "Storage_Streams",
   "Win32_Media_Audio",
   "Win32_System_Com",
-  # Chỉ để TEST đọc lại độ ưu tiên của piper.exe — đặt cờ xong phải kiểm nó có hiệu lực thật,
-  # vì onnxruntime đã từng ghi đè affinity đặt từ ngoài (xem piper.rs).
+  # CloseHandle/HANDLE/WAIT_OBJECT_0 và CreateEventW/WaitForSingleObject của hàng đợi phát
+  # (xem wave_out.rs).
   "Win32_Foundation",
   "Win32_System_Threading",
   # CreateEventW cần SECURITY_ATTRIBUTES -> phải bật kèm Win32_Security (xem wave_out.rs).

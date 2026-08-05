@@ -164,7 +164,7 @@ impl Drop for WaveOut {
 }
 
 /// Cắt header WAV, trả (tần số, PCM). Duyệt chunk chứ không bê cứng 44 — cùng lý do với
-/// `piper::apply_gain`.
+/// [`crate::runtime::apply_gain`].
 pub fn split_wav(wav: &[u8]) -> Option<(u32, &[u8])> {
     if wav.len() < 12 || &wav[..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
         return None;

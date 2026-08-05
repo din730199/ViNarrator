@@ -1,20 +1,20 @@
 ﻿//! VieNeu-TTS v3 Turbo — giọng neural 48 kHz, đọc lẫn Anh–Việt, chạy bằng tiến trình con Python.
 //!
-//! **Vì sao đáng làm dù nặng hơn Piper:** `infer_stream` (không có trong model card) cho mẩu
-//! tiếng đầu sau **~0,2s**, và model được huấn luyện trên ~10.000 giờ Anh–Việt nên đọc chữ
-//! tiếng Anh lẫn trong câu tử tế — chỗ Piper phải mượn âm tiếng Anh của espeak-ng rồi ép qua
-//! giọng chỉ học tiếng Việt.
+//! Đây là engine neural DUY NHẤT của app; engine còn lại là giọng Windows có sẵn, vừa là lưới
+//! an toàn khi VieNeu hỏng. Mặc định vẫn là giọng Windows — cài xong chạy được ngay, không bắt
+//! ai tải 560 MB mới nghe được câu đầu.
+//!
+//! **Vì sao chọn nó:** `infer_stream` (không có trong model card) cho mẩu tiếng đầu sau
+//! **~0,2s**, và model được huấn luyện trên ~10.000 giờ Anh–Việt nên đọc chữ tiếng Anh lẫn
+//! trong câu tử tế — đúng thứ cần cho phụ đề game đầy tên riêng tiếng Anh.
 //!
 //! **Đo lúc CPU bị tranh** (5 tiến trình giả làm game + 1 luồng khung hình, kín 6 nhân vật lý),
-//! cả hai cùng là tiến trình riêng ở BELOW_NORMAL, so với nền:
+//! chạy ở tiến trình riêng mức BELOW_NORMAL, so với nền: p50 **+17,7%**, p99 **+6,2%**,
+//! max **+0,1%**, RAM **1,3 GB**. Nâng nền lên gấp đôi nhưng **gần như không gây giật khung
+//! hình** vì tải trải đều 1,5 nhân chứ không bung ra từng nhịp.
 //!
-//! | | p50 | p99 | max (giật) | RAM |
-//! |---|---|---|---|---|
-//! | Piper | +7,8% | +7,9% | +36,2% | 97 MB |
-//! | **VieNeu** | +17,7% | +6,2% | **+0,1%** | 1300 MB |
-//!
-//! VieNeu chạy đều 1,5 nhân nên **êm hơn Piper ở khoản giật**, đổi lại nâng nền lên gấp đôi
-//! và tốn 13× RAM. Vì vậy Piper vẫn là mặc định.
+//! *(Piper `vi_VN-vais1000` từng là lựa chọn nhẹ hơn — 97 MB RAM, max +36,2% — nhưng nghe thử
+//! thì đọc chữ tiếng Anh không dùng được, nên đã gỡ hẳn. Xem README mục "Vì sao bỏ Piper".)*
 //!
 //! **Cách nuôi Python:** tải `uv` (một file exe tĩnh) rồi để nó tự tải CPython riêng
 //! (`--python-preference only-managed`) — KHÔNG dùng Python có sẵn của máy, vì app phải xác

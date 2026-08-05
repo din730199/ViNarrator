@@ -2,7 +2,7 @@
 
 File này được nhúng vào exe (`include_str!`) và ghi ra đĩa lúc cài runtime.
 
-Giao thức (một dòng = một lệnh, cùng khuôn với piper.exe để dùng lại code sẵn có):
+Giao thức (một dòng = một lệnh):
     vào : <câu cần đọc>\\n
     ra  : "V <tên giọng>\\n" liệt kê giọng có sẵn, in hết TRƯỚC "READY"
           "READY\\n"       nạp xong model, chạy nóng xong, sẵn sàng nhận câu
@@ -11,11 +11,11 @@ Giao thức (một dòng = một lệnh, cùng khuôn với piper.exe để dùn
           "X <lý do>\\n"   câu này hỏng (KHÔNG chết tiến trình)
 
 Vì sao ghi ra FILE chứ không đẩy byte qua stdout: trộn nhị phân với văn bản trên stdout rất
-dễ sai, và bên Rust đã có sẵn khuôn "đọc file rồi xoá" của Piper. Bên Rust tự đếm số thứ tự
-nên không phải đọc tên file — miễn nhiễm bảng mã (tên user có thể là tiếng Việt).
+dễ sai. Bên Rust tự đếm số thứ tự nên không phải đọc tên file — miễn nhiễm bảng mã (tên user
+có thể là tiếng Việt).
 
-Mỗi mẩu là một WAV hoàn chỉnh 16-bit để Rust phát bằng đúng PlaySound đang dùng cho hai giọng
-kia, khỏi phải viết lại khâu phát âm thanh.
+Mỗi mẩu là một WAV hoàn chỉnh 16-bit; Rust xếp thẳng vào hàng đợi `waveOut` để nối liền mạch
+(KHÔNG phải PlaySound — mở lại thiết bị mỗi mẩu sẽ chèn khe im vào giữa từ, xem wave_out.rs).
 """
 import os
 import sys
@@ -69,7 +69,7 @@ def main():
                 print("C", flush=True)
             print("E", flush=True)
         except Exception as e:
-            # Một câu hỏng KHÔNG được giết cả tiến trình — bên Rust sẽ lùi câu đó về Piper.
+            # Một câu hỏng KHÔNG được giết cả tiến trình — Rust lùi câu đó về giọng Windows.
             print(f"X {type(e).__name__}: {e}".replace("\n", " "), flush=True)
 
 

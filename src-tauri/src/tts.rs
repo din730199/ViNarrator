@@ -72,7 +72,7 @@ fn resolve_voice(name: &str) -> Option<VoiceInformation> {
 
 #[derive(Clone)]
 struct Params {
-    /// "windows" | "piper" | "vieneu". Engine chưa tải xong thì tự lùi về giọng Windows.
+    /// "windows" | "vieneu". Engine chưa tải xong thì tự lùi về giọng Windows.
     engine: String,
     voice_name: String,
     speed: f64,

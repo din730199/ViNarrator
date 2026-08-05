@@ -154,7 +154,7 @@ impl Narrator {
         self.reload.dedup.store(true, Ordering::Relaxed);
     }
 
-    /// engine: "windows" | "piper" | "vieneu".
+    /// engine: "windows" | "vieneu".
     pub fn set_tts_engine(&self, engine: String) {
         self.edit(|c| c.tts_engine = engine.clone());
         self.tts.set_params(Some(engine), None, None, None);

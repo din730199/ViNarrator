@@ -12,6 +12,7 @@ mod vieneu;
 mod wave_out;
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -101,13 +102,39 @@ fn set_tuning(
 /// engine: "windows" | "vieneu". Lần đầu chọn VieNeu phải cài ~560 MB — làm ở thread riêng và
 /// báo qua event, KHÔNG chặn command: chặn ở đây thì UI đơ suốt thời gian cài.
 /// Đổi config trước, cài sau: cài hỏng thì `tts.rs` tự lùi về giọng Windows.
+static DANG_CAI: AtomicBool = AtomicBool::new(false);
+
+/// Thả khoá kể cả khi luồng cài panic — khoá kẹt nghĩa là tới khi khởi động lại app mới cài
+/// lại được, mà lúc đó `ready()` vẫn false nên người dùng kẹt luôn ở giọng Windows.
+struct KhoaCai;
+
+impl Drop for KhoaCai {
+    fn drop(&mut self) {
+        DANG_CAI.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Xin quyền chạy luồng cài VieNeu. `None` = đã có luồng khác đang cài.
+///
+/// Không có khoá này thì bấm VieNeu → Windows → VieNeu lúc đang cài sẽ dựng luồng thứ hai
+/// (`ready()` vẫn false suốt quá trình cài): hai `uv pip install` cùng ghi vào một venv, hai
+/// lượt kéo 285 MB model vào cùng cache, và tệ nhất là `VieNeu::start_timeout` của luồng sau
+/// `remove_dir_all(out)` **xoá luôn thư mục mẩu tiếng** mà luồng trước đang dùng.
+fn xin_cai() -> Option<KhoaCai> {
+    (!DANG_CAI.swap(true, Ordering::SeqCst)).then_some(KhoaCai)
+}
+
 #[tauri::command]
 fn set_tts_engine(app: AppHandle, n: tauri::State<Narrator>, engine: String) -> Config {
     n.set_tts_engine(engine.clone());
     if engine != "vieneu" || vieneu::ready() {
         return n.config();
     }
+    let Some(khoa) = xin_cai() else {
+        return n.config();
+    };
     std::thread::spawn(move || {
+        let _khoa = khoa;
         // Tiến độ cài đi thẳng ra thanh trạng thái: 560 MB mà thanh đứng im thì người dùng
         // tưởng app treo.
         let bao = |s: String| {
@@ -281,4 +308,19 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bấm chọn VieNeu lần thứ hai lúc lần cài đầu chưa xong thì KHÔNG được dựng luồng cài
+    /// thứ hai — xem `xin_cai`. Và cài xong phải thả khoá, nếu không sẽ không bao giờ cài lại.
+    #[test]
+    fn khong_cai_chong_hai_luong() {
+        let khoa = xin_cai().expect("luồng cài đầu tiên phải xin được khoá");
+        assert!(xin_cai().is_none(), "đang cài dở mà vẫn cho luồng thứ hai chạy");
+        drop(khoa);
+        assert!(xin_cai().is_some(), "cài xong không thả khoá — kẹt luôn ở giọng Windows");
+    }
 }
