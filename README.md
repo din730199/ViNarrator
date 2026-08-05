@@ -184,7 +184,7 @@ Bốn model đã tải về nghe thử trước khi chọn — **Piper thắng v
 |---|---|---|---|
 | **Piper** | 0,31s | **0,05** | *(chọn)* |
 | MMS-TTS-vie (Meta) | 2,2s | 0,22 | chậm hơn 7× mà không hơn rõ rệt |
-| VieNeu-TTS v3 Turbo | 3,7s | 0,41 | 48 kHz, mới nhất, nhưng **7 đồ thị ONNX ở 2 repo (~285 MB) + phonemizer Python**, và 3,7s/câu thì phụ đề đã trôi mất |
+| VieNeu-TTS v3 Turbo | 3,7s | 0,41 | **7 đồ thị ONNX ở 2 repo (~285 MB) + phonemizer Python + 1,3 GB RAM.** Không phải vì chậm — xem *Còn VieNeu thì sao* ở dưới |
 | V-TTS / Valtec | — | — | trọng số `v-tts/v-tts-pretrained` trả **401**, không tải được |
 
 Với thuyết minh game realtime, nhịp quét là 700ms — engine nào tổng hợp lâu hơn thế thì câu đọc
@@ -218,6 +218,51 @@ Ba chi tiết dễ sai, đã xử lý:
 Runtime + model tải về `%LOCALAPPDATA%\ViNarrator\piper` ở lần đầu bật (tải vào `.part` rồi mới
 đổi tên, nên tải dở không bị tưởng nhầm là xong). Giải nén bằng `tar.exe` có sẵn từ Windows 10
 1803 — khỏi thêm crate `zip`.
+
+### Ưu tiên tiến trình: bắt buộc, không phải tinh chỉnh cho vui
+
+App **luôn chạy nền trong lúc người dùng đang chơi game**, nên chỉ đo giây/câu là thiếu.
+Đo thêm thì lộ ra: onnxruntime trong `piper.exe` **bung ~5,8 nhân trong 0,39s** — đúng dạng
+tải gây khựng khung hình.
+
+Đo lúc CPU **đang bị tranh** (5 tiến trình 1 luồng giả làm game + 1 luồng khung hình, vừa kín
+6 nhân vật lý của i5-12400F), so với nền:
+
+| ưu tiên của `piper.exe` | p50 | p99 | max (giật) |
+|---|---|---|---|
+| thường | +5,0% | +126,6% | **+183,7%** |
+| **BELOW_NORMAL** (đang dùng) | +7,8% | **+7,9%** | **+36,2%** |
+| IDLE | +7,7% | +12,0% | +36,8% |
+
+Một cờ `creation_flags` đổi p99 từ **+127% xuống +8%**. IDLE quá tay, không hơn.
+
+**Ghim nhân KHÔNG thay được cách này** — đã thử và thất bại, có kiểm chứng:
+
+- `SetProcessAffinityMask` đặt xong bị **chính onnxruntime ghi đè**: đặt `[0]`, chạy một câu,
+  đọc lại ra `[0..11]`. Bảng đo affinity đầu tiên vì thế đo vào hư không.
+- `OMP_NUM_THREADS`, `ORT_INTRA_OP_NUM_THREADS`: **không tác dụng** (5,85 / 5,86 / 5,64 nhân) —
+  bản piper 2023 không đọc mấy biến này.
+
+Vì cờ có thể bị nuốt lặng như vậy, test `tien_trinh_con_chay_o_uu_tien_thap` **đọc lại
+`GetPriorityClass` từ hệ điều hành** sau khi đã tổng hợp thật, chứ không tin `creation_flags`.
+Đã chạy đỏ để chắc nó phân biệt được: bỏ cờ ra thì đọc ra `0x20` và test fail.
+
+### Còn VieNeu thì sao (đo lại cho công bằng)
+
+`infer_stream` có sẵn trong thư viện (model card không ghi) và cho **tiếng đầu sau 0,25s** —
+nhanh hơn Piper. Lý do loại VieNeu **không phải "chậm"** như ghi ở bảng trên:
+
+| cùng là tiến trình riêng, cùng BELOW_NORMAL | p50 | p99 | max | RAM |
+|---|---|---|---|---|
+| Piper | **+7,8%** | +7,9% | +36,2% | **97 MB** |
+| VieNeu (streaming, `threads=2`) | +17,7% | **+6,2%** | **+0,1%** | 1300 MB |
+
+VieNeu **êm hơn hẳn ở khoản giật** (chạy đều 1,5 nhân thay vì bùng 5,8), nhưng nâng nền lên
+gấp đôi và tốn **13× RAM**. Nó bị loại vì RAM + phải tự lái 7 đồ thị ONNX từ Rust, **không phải
+vì tốc độ**.
+
+Cả hai phép đo trên đều là **trường hợp xấu nhất**: "game" là vòng nhân ma trận tổng hợp
+(không có đồng bộ GPU), và TTS bị bơm liên tục, dày hơn phụ đề thật nhiều lần.
 
 ## Kiến trúc
 

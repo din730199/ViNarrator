@@ -28,6 +28,21 @@ const MODEL_CFG_URL: &str = "https://huggingface.co/rhasspy/piper-voices/resolve
 
 /// Không hiện cửa sổ console đen mỗi lần dựng tiến trình con (CREATE_NO_WINDOW).
 const NO_WINDOW: u32 = 0x0800_0000;
+/// BELOW_NORMAL_PRIORITY_CLASS — **bắt buộc**, không phải tinh chỉnh cho vui.
+///
+/// onnxruntime trong piper.exe bung ~5,8 nhân trong 0,39s. Đo lúc CPU đang bị tranh
+/// (5 nhân giả làm game + 1 luồng khung hình trên i5-12400F 6 nhân), so với nền:
+///
+/// | ưu tiên | p50 | p99 | max (giật) |
+/// |---|---|---|---|
+/// | thường | +0,8% | +96,5% | **+154,6%** |
+/// | **BELOW_NORMAL** | +2,1% | +14,2% | **+9,1%** |
+/// | IDLE | +7,7% | +12,0% | +36,8% (quá tay, ngược lại tệ hơn) |
+///
+/// Ghim nhân KHÔNG thay được cái này: `SetProcessAffinityMask` đặt xong bị chính onnxruntime
+/// ghi đè về đủ 12 luồng (đã kiểm: đặt `[0]`, đọc lại ra `[0..11]`), còn `OMP_NUM_THREADS` /
+/// `ORT_INTRA_OP_NUM_THREADS` thì bản piper 2023 không đọc.
+const BELOW_NORMAL: u32 = 0x0000_4000;
 /// Câu dài nhất đo được tốn 0,405s. 15s là để phát hiện piper treo hẳn, không phải để chờ.
 const SYNTH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Tải 82 MB: client blocking của reqwest mặc định timeout 30s -> đứt giữa chừng ở mạng chậm.
@@ -145,7 +160,9 @@ impl Piper {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .creation_flags(NO_WINDOW)
+            // Ưu tiên thấp: app luôn chạy nền trong lúc người dùng đang chơi game (xem
+            // BELOW_NORMAL). Đọc chậm hơn 2% mà hết giật khung hình là đổi rất hời.
+            .creation_flags(NO_WINDOW | BELOW_NORMAL)
             .spawn()
             .map_err(|e| format!("không chạy được piper.exe: {e}"))?;
 
@@ -302,6 +319,30 @@ mod tests {
         let goc = v.clone();
         apply_gain(&mut v, 50);
         assert_eq!(v, goc);
+    }
+
+    /// Cờ ưu tiên có thật sự ăn không — ĐỌC LẠI từ hệ điều hành, không tin lời `creation_flags`.
+    /// Cần thiết vì onnxruntime từng nuốt `SetProcessAffinityMask` đặt từ ngoài mà không báo gì.
+    #[test]
+    #[ignore]
+    fn tien_trinh_con_chay_o_uu_tien_thap() {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            GetPriorityClass, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let mut p = Piper::start(1.0).expect("dựng tiến trình piper");
+        // Đọc SAU khi đã tổng hợp: nếu onnxruntime tự nâng ưu tiên lúc dựng thread pool
+        // thì phải lộ ra ở đây, chứ đọc ngay sau spawn thì chưa chắc đã thấy.
+        p.synth("Cây cầu cũ đang sụp đổ trong đêm").expect("tổng hợp thử");
+
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, p.child.id()) }
+            .expect("mở tiến trình con");
+        let cls = unsafe { GetPriorityClass(h) };
+        unsafe {
+            let _ = CloseHandle(h);
+        }
+        assert_eq!(cls, BELOW_NORMAL, "cờ ưu tiên bị ghi đè — đọc ra {cls:#x}");
     }
 
     /// Đường THẬT: tải ~82 MB + giải nén + dựng tiến trình + tổng hợp hai câu liên tiếp.
