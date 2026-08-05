@@ -1,7 +1,8 @@
 # ViNarrator — Thuyết minh game tiếng Việt (Tauri + React + Rust)
 
 Chụp một vùng màn hình → OCR → dịch sang tiếng Việt → **đọc thành tiếng**.
-Đóng gói thành **một file installer** (NSIS), không cần Python/venv/model tải thêm.
+Đóng gói thành **một file installer** (NSIS), không cần Python/venv. Cài xong chạy được ngay;
+giọng neural Piper là tuỳ chọn, bật thì mới tải thêm.
 
 Kiến trúc bám theo RiTaiAI: logic nặng ở Rust (`src-tauri/src`), UI React/Vite (`src`), vỏ Tauri v2.
 
@@ -10,6 +11,7 @@ Kiến trúc bám theo RiTaiAI: logic nặng ở Rust (`src-tauri/src`), UI Reac
 - Windows 10/11
 - Giọng tiếng Việt offline của Windows (vd **Microsoft An**).
   Chưa có: Settings → Time & Language → Speech → Manage voices → Add → Vietnamese.
+  (Hoặc bật giọng **Piper** trong app — không cần cài gì vào Windows, xem *Giọng đọc*.)
 - Để **build**: Rust 1.82+, `cargo-tauri`, Node 22+, Yarn.
 
 ## Chạy / build
@@ -18,10 +20,16 @@ Kiến trúc bám theo RiTaiAI: logic nặng ở Rust (`src-tauri/src`), UI Reac
 yarn install
 yarn dev      # cargo tauri dev
 yarn build    # cargo tauri build -> src-tauri/target/release/bundle/nsis/*-setup.exe
-yarn test     # cargo test (44 unit test)
+yarn test     # cargo test (48 unit test)
 ```
 
-Installer ~2.8 MB, exe ~11 MB.
+Installer ~3.4 MB, exe ~13.5 MB.
+
+Ba test đụng mạng/loa nên để `#[ignore]`, chạy tay khi sửa phần giọng đọc:
+
+```powershell
+cargo test --lib -- --ignored --nocapture --test-threads=1
+```
 
 ## Dùng
 
@@ -30,7 +38,7 @@ Installer ~2.8 MB, exe ~11 MB.
 - **VÙNG LOẠI TRỪ** — kéo chọn vùng con bỏ qua (HUD/logo) trong khung quét; nút *xoá* để bỏ.
 - **CHẾ ĐỘ** — Anh→Việt hoặc Trung→Việt.
 - **CÁCH DỊCH** — Google Dịch hoặc AI (xem dưới).
-- **GIỌNG ĐỌC / ÂM LƯỢNG / TỐC ĐỘ**.
+- **GIỌNG ĐỌC** — giọng Windows hoặc Piper (xem dưới) — **/ ÂM LƯỢNG / TỐC ĐỘ**.
 
 Cấu hình lưu ở `%APPDATA%\ViNarrator\config.json` (giữ nguyên tên field của bản Python
 nên `config.json` cũ copy sang vẫn đọc được).
@@ -159,6 +167,58 @@ Confidence của OneOCR **không** dùng để lọc rác được: chữ nhỏ 
 (~0.99) trong khi tiếng Việt đọc đúng lại chỉ 0.72 — hai dải chồng nhau. Lọc theo chiều cao dòng
 mới là cái phân biệt được.
 
+## Giọng đọc
+
+Chọn trong giao diện (**GIỌNG ĐỌC**):
+
+| | tần số | tổng hợp¹ | dung lượng | ghi chú |
+|---|---|---|---|---|
+| **Giọng Windows** (mặc định) | 16 kHz | 0,26s | 0 MB | có sẵn, chọn được giọng cài trong Windows |
+| **Piper** `vi_VN-vais1000-medium` | 22 kHz | 0,31s | ~82 MB | mạng neural (VITS), một giọng duy nhất |
+
+¹ cùng một câu 144 ký tự, đo trên cùng máy.
+
+Bốn model đã tải về nghe thử trước khi chọn — **Piper thắng vì độ trễ, không phải vì chất lượng**:
+
+| | tổng hợp | RTF | vì sao loại |
+|---|---|---|---|
+| **Piper** | 0,31s | **0,05** | *(chọn)* |
+| MMS-TTS-vie (Meta) | 2,2s | 0,22 | chậm hơn 7× mà không hơn rõ rệt |
+| VieNeu-TTS v3 Turbo | 3,7s | 0,41 | 48 kHz, mới nhất, nhưng **7 đồ thị ONNX ở 2 repo (~285 MB) + phonemizer Python**, và 3,7s/câu thì phụ đề đã trôi mất |
+| V-TTS / Valtec | — | — | trọng số `v-tts/v-tts-pretrained` trả **401**, không tải được |
+
+Với thuyết minh game realtime, nhịp quét là 700ms — engine nào tổng hợp lâu hơn thế thì câu đọc
+ra đã lệch khỏi cái đang hiện trên màn hình. RTF 0,05 của Piper coi như không thêm trễ.
+
+### Vì sao Piper chạy bằng tiến trình con chứ không nhúng thẳng
+
+Crate `piper-rs` kéo theo `espeak-rs-sys`, và cái đó cần **libclang (LLVM ~2,5 GB) + CMake** lúc
+build, đồng thời nhúng tĩnh espeak-ng (**GPL-3.0**) vào exe. Đắt cho một tính năng tuỳ chọn.
+
+Cách đang dùng: spawn `piper.exe` **một lần** rồi đẩy từng câu qua stdin. Đo trên máy thật:
+
+| | câu đầu (kèm nạp model 60 MB) | câu 32–39 ký tự | câu 144 ký tự |
+|---|---|---|---|
+| | 0,48–1,9s² | **~0,10s** | 0,405s |
+
+² 1,9s là lúc model vừa tải xong, đĩa còn nguội; các lần sau ~0,5s.
+
+Tức là **sidecar không chậm hơn nhúng tĩnh**, vì chi phí nằm ở nạp model chứ không ở spawn.
+
+Ba chi tiết dễ sai, đã xử lý:
+
+- **Không đọc đường dẫn piper in ra stdout** — đường dẫn có thể chứa tiếng Việt
+  (`C:\Users\Nguyễn Văn A\...`) và piper in bằng bảng mã hẹp. Chỉ dùng dòng đó làm tín hiệu
+  "xong câu", rồi lấy file wav duy nhất trong thư mục ra.
+- **Piper lỗi thì câu đó lùi ngay về giọng Windows.** Im lặng là lỗi người dùng không nhìn thấy;
+  nghe thấy giọng lạ thì còn biết đường đi kiểm tra.
+- **Đổi tốc độ phải dựng lại tiến trình** — `--length_scale` là tham số dòng lệnh lúc spawn, và
+  nó là **nghịch đảo** tốc độ.
+
+Runtime + model tải về `%LOCALAPPDATA%\ViNarrator\piper` ở lần đầu bật (tải vào `.part` rồi mới
+đổi tên, nên tải dở không bị tưởng nhầm là xong). Giải nén bằng `tar.exe` có sẵn từ Windows 10
+1803 — khỏi thêm crate `zip`.
+
 ## Kiến trúc
 
 | File | Vai trò | Port từ (bản Python) |
@@ -167,7 +227,8 @@ mới là cái phân biệt được.
 | `src-tauri/src/ocr.rs` | chọn engine + `Windows.Media.Ocr` | `ocr.py` (winsdk) |
 | `src-tauri/src/oneocr.rs` | OneOCR (Snipping Tool) + tự chép runtime | — (mới) |
 | `src-tauri/src/translate.rs` | Google Translate + LLM (OpenAI-compatible) | `translate.py` (deep-translator) |
-| `src-tauri/src/tts.rs` | `Windows.Media.SpeechSynthesis` + `PlaySound` | `tts.py` (winsdk + winsound) |
+| `src-tauri/src/tts.rs` | chọn giọng + `Windows.Media.SpeechSynthesis` + `PlaySound` | `tts.py` (winsdk + winsound) |
+| `src-tauri/src/piper.rs` | giọng neural Piper (tiến trình con giữ sống) + tự tải runtime | — (mới) |
 | `src-tauri/src/dedup.rs` | chống đọc trùng phụ đề cuộn | `dedup.py` |¹
 | `src-tauri/src/speech_queue.rs` | hàng đợi đọc (dedup + cap 3) | `speech_queue.py` |
 | `src-tauri/src/narrator.rs` | 2 thread: chụp→OCR→dedup, và dịch→đọc | `narrator.py` |
@@ -202,17 +263,19 @@ git show 64e09eb:gui.py          # xem 1 file
 git checkout 64e09eb -- narrator.py ocr.py tts.py   # lấy lại vài file
 ```
 
-Ba thứ của bản Python **chưa có** ở bản Rust (đều kéo theo PyTorch vài GB nên bỏ):
+Hai thứ của bản Python **chưa có** ở bản Rust (đều kéo theo PyTorch vài GB nên bỏ):
 
 | Bỏ | Vì sao | Muốn có lại |
 |---|---|---|
 | Chế độ "Đọc thuần" (OCR tiếng Việt, EasyOCR) | Windows OCR không hỗ trợ tiếng Việt | nhúng PaddleOCR ONNX qua crate `ort` |
-| Giọng Piper | `piper-rs` → `espeak-rs-sys`, build cần LLVM/libclang | `winget install LLVM.LLVM` rồi thêm crate |
 | Giọng MMS | đang là safetensors + torch | export ONNX một lần + viết tokenizer ký tự từ `vocab.json` |
+
+*(Giọng Piper đã có lại — xem **Giọng đọc** ở trên.)*
 
 Thư mục `models/` (~200 MB) cũng đã xoá và nằm trong `.gitignore` — `model.safetensors` 145 MB
 vượt giới hạn 100 MB của GitHub. Tải lại khi cần:
 
 - Piper `vi_VN-vais1000-medium.onnx` (+ `.onnx.json`) —
   [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main/vi/vi_VN)
+  (app tự tải, mục này chỉ để tra tay)
 - MMS `mms-tts-vie` — [Xenova/mms-tts-vie](https://huggingface.co/Xenova/mms-tts-vie)

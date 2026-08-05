@@ -45,7 +45,12 @@ pub struct Narrator {
 
 impl Narrator {
     pub fn new(app: AppHandle, cfg: Config) -> Self {
-        let tts = Arc::new(TtsEngine::new(cfg.voice_name.clone(), cfg.speed, cfg.volume));
+        let tts = Arc::new(TtsEngine::new(
+            cfg.tts_engine.clone(),
+            cfg.voice_name.clone(),
+            cfg.speed,
+            cfg.volume,
+        ));
         let me = Self {
             cfg: Arc::new(Mutex::new(cfg)),
             running: Arc::new(AtomicBool::new(false)),
@@ -149,19 +154,25 @@ impl Narrator {
         self.reload.dedup.store(true, Ordering::Relaxed);
     }
 
+    /// engine: "windows" | "piper".
+    pub fn set_tts_engine(&self, engine: String) {
+        self.edit(|c| c.tts_engine = engine.clone());
+        self.tts.set_params(Some(engine), None, None, None);
+    }
+
     pub fn set_voice(&self, name: String) {
         self.edit(|c| c.voice_name = name.clone());
-        self.tts.set_params(Some(name), None, None);
+        self.tts.set_params(None, Some(name), None, None);
     }
 
     pub fn set_speed(&self, speed: f64) {
         self.edit(|c| c.speed = speed);
-        self.tts.set_params(None, Some(speed), None);
+        self.tts.set_params(None, None, Some(speed), None);
     }
 
     pub fn set_volume(&self, volume: u8) {
         self.edit(|c| c.volume = volume);
-        self.tts.set_params(None, None, Some(volume));
+        self.tts.set_params(None, None, None, Some(volume));
     }
 
     pub fn set_region(&self, region: Region) {

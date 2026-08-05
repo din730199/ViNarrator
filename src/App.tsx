@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Config, ENGINES, LLM_PRESETS, MODES, Spoken, Voice } from './types';
+import { Config, ENGINES, LLM_PRESETS, MODES, Spoken, TTS_ENGINES, Voice } from './types';
 
 const PURPLE = '#7c3aed';
 const RED = '#b91c1c';
@@ -19,6 +19,8 @@ export default function App() {
   // Cảnh báo từ khâu dịch (key sai, hết quota…). Rỗng = đang chạy bình thường.
   const [warn, setWarn] = useState('');
   const [log, setLog] = useState<Spoken[]>([]);
+  // Runtime Piper đã có sẵn chưa — chỉ để chọn chữ hiển thị, không chặn gì.
+  const [piperReady, setPiperReady] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -27,8 +29,14 @@ export default function App() {
     void invoke<Config>('get_config').then(setCfg, fail);
     void invoke<Voice[]>('list_voices').then(setVoices, fail);
     void invoke<boolean>('is_running').then(setRunning, fail);
+    void invoke<boolean>('piper_ready').then(setPiperReady, fail);
     const un = [
-      listen<string>('status', (e) => setStatus(e.payload)),
+      listen<string>('status', (e) => {
+        setStatus(e.payload);
+        // Tải Piper xong cũng báo qua "status" -> hỏi lại thay vì dò chuỗi. Event này hiếm
+        // (chỉ khi đổi engine/chế độ) nên kiểm 3 file là đủ rẻ.
+        void invoke<boolean>('piper_ready').then(setPiperReady);
+      }),
       listen<string>('warn', (e) => setWarn(e.payload)),
       // giữ 200 dòng gần nhất — log dài không giúp gì mà tốn RAM
       listen<Spoken>('text', (e) => setLog((l) => [...l, e.payload].slice(-200))),
@@ -280,23 +288,47 @@ export default function App() {
 
         <label>GIỌNG ĐỌC</label>
         <select
-          value={cfg.voice_name}
-          disabled={voices.length === 0}
+          value={cfg.tts_engine}
           onChange={(e) => {
-            setCfg({ ...cfg, voice_name: e.target.value });
-            void invoke('set_voice', { name: e.target.value });
+            const engine = e.target.value;
+            // Lần đầu chọn Piper sẽ tải 82 MB ở nền — báo ngay để không tưởng app treo;
+            // tiến độ thật đến sau qua event "status".
+            if (engine === 'piper' && !piperReady) setStatus('Đang tải giọng Piper…');
+            void invoke<Config>('set_tts_engine', { engine }).then(setCfg);
           }}
         >
-          {voices.length === 0 ? (
-            <option>(chưa cài giọng tiếng Việt)</option>
-          ) : (
-            voices.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.label}
-              </option>
-            ))
-          )}
+          {TTS_ENGINES.map((e) => (
+            <option key={e.value} value={e.value}>
+              {e.label}
+            </option>
+          ))}
         </select>
+
+        {cfg.tts_engine === 'piper' ? (
+          <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+            vi_VN-vais1000 · {piperReady ? 'đã tải' : 'sẽ tải ở lần đọc đầu'} · chưa tải xong thì
+            vẫn đọc bằng giọng Windows.
+          </div>
+        ) : (
+          <select
+            value={cfg.voice_name}
+            disabled={voices.length === 0}
+            onChange={(e) => {
+              setCfg({ ...cfg, voice_name: e.target.value });
+              void invoke('set_voice', { name: e.target.value });
+            }}
+          >
+            {voices.length === 0 ? (
+              <option>(chưa cài giọng tiếng Việt)</option>
+            ) : (
+              voices.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.label}
+                </option>
+              ))
+            )}
+          </select>
+        )}
 
         <label>ÂM LƯỢNG &nbsp; {cfg.volume}%</label>
         <input

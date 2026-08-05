@@ -1,7 +1,10 @@
-//! TtsEngine — đọc tuần tự bằng Windows.Media.SpeechSynthesis + PlaySound (thay winsound).
-//! Port từ tts.py, chỉ giữ engine offline của Windows (edge/piper/mms xem README).
+//! TtsEngine — đọc tuần tự, hai giọng để chọn:
+//! - **windows** — Windows.Media.SpeechSynthesis offline (Microsoft An). Có sẵn, 0 MB.
+//! - **piper** — giọng neural VITS, xem [`crate::piper`]. Tự nhiên hơn, đổi lại ~82 MB tải về.
 //!
-//! Worker thread + PlaySound đồng bộ => đọc tuần tự. Chống trùng + cap qua SpeechQueue.
+//! Cả hai đều trả về WAV đầy đủ nên dùng chung một đường phát (PlaySound, thay winsound của
+//! bản Python). Worker thread + PlaySound đồng bộ => đọc tuần tự, không chồng tiếng.
+//! Chống trùng + cap qua SpeechQueue.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -13,6 +16,7 @@ use windows::Storage::Streams::DataReader;
 use windows::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_PURGE, SND_SYNC};
 
 use crate::ensure_com;
+use crate::piper::{self, Piper};
 use crate::speech_queue::SpeechQueue;
 
 #[derive(Clone, Serialize)]
@@ -63,6 +67,8 @@ fn resolve_voice(name: &str) -> Option<VoiceInformation> {
 
 #[derive(Clone)]
 struct Params {
+    /// "windows" | "piper". Chưa tải xong Piper thì `synth` tự lùi về giọng Windows.
+    engine: String,
     voice_name: String,
     speed: f64,
     volume: u8,
@@ -76,10 +82,10 @@ pub struct TtsEngine {
 }
 
 impl TtsEngine {
-    pub fn new(voice_name: String, speed: f64, volume: u8) -> Self {
+    pub fn new(engine: String, voice_name: String, speed: f64, volume: u8) -> Self {
         let engine = Self {
             queue: Arc::new(SpeechQueue::new(3)),
-            params: Arc::new(Mutex::new(Params { voice_name, speed, volume })),
+            params: Arc::new(Mutex::new(Params { engine, voice_name, speed, volume })),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             quit: Arc::new(AtomicBool::new(false)),
         };
@@ -92,8 +98,10 @@ impl TtsEngine {
         std::thread::spawn(move || {
             ensure_com();
             // Giữ nguyên synthesizer giữa các câu: dựng mới + `AllVoices()` mỗi câu là phí,
-            // giọng chỉ đổi khi người dùng bấm dropdown.
+            // giọng chỉ đổi khi người dùng bấm dropdown. Piper cũng vậy: tiến trình con giữ
+            // sống để khỏi nạp lại model 60 MB (0,48s) ở mỗi câu.
             let mut speaker: Option<Speaker> = None;
+            let mut piper: Option<Piper> = None;
             while !quit.load(Ordering::Relaxed) {
                 let Some(text) = queue.try_dequeue() else {
                     let (lock, cv) = &*wake;
@@ -105,7 +113,7 @@ impl TtsEngine {
                     continue;
                 };
                 let p = params.lock().unwrap().clone();
-                match synthesize(&mut speaker, &p, &text) {
+                match synth(&mut speaker, &mut piper, &p, &text) {
                     Ok(wav) => play_blocking(&wav),
                     Err(e) => {
                         eprintln!("[TTS] lỗi: {e}");
@@ -136,8 +144,17 @@ impl TtsEngine {
         }
     }
 
-    pub fn set_params(&self, voice_name: Option<String>, speed: Option<f64>, volume: Option<u8>) {
+    pub fn set_params(
+        &self,
+        engine: Option<String>,
+        voice_name: Option<String>,
+        speed: Option<f64>,
+        volume: Option<u8>,
+    ) {
         let mut p = self.params.lock().unwrap();
+        if let Some(e) = engine {
+            p.engine = e;
+        }
         if let Some(v) = voice_name {
             p.voice_name = v;
         }
@@ -195,6 +212,41 @@ fn speaker_for<'a>(
     Ok(&s.synth)
 }
 
+/// Chọn engine theo config. Piper trục trặc thì **lùi ngay về giọng Windows cho chính câu đó**:
+/// người dùng nghe thấy giọng lạ sẽ đi kiểm tra, chứ im lặng thì tưởng app hỏng hẳn.
+fn synth(
+    speaker: &mut Option<Speaker>,
+    piper_cache: &mut Option<Piper>,
+    p: &Params,
+    text: &str,
+) -> Result<Vec<u8>, String> {
+    if p.engine == "piper" && piper::ready() {
+        match synth_piper(piper_cache, p, text) {
+            Ok(wav) => return Ok(wav),
+            Err(e) => {
+                eprintln!("[TTS] Piper lỗi: {e} — câu này đọc bằng giọng Windows");
+                *piper_cache = None; // dựng lại tiến trình con ở câu sau
+            }
+        }
+    } else if piper_cache.is_some() {
+        *piper_cache = None; // đổi sang giọng Windows -> thả tiến trình con, khỏi ăn RAM
+    }
+    synthesize(speaker, p, text).map_err(|e| e.to_string())
+}
+
+fn synth_piper(cache: &mut Option<Piper>, p: &Params, text: &str) -> Result<Vec<u8>, String> {
+    // length_scale là tham số dòng lệnh lúc spawn -> kéo thanh tốc độ phải dựng lại tiến trình.
+    if cache.as_ref().is_some_and(|x| x.speed() != p.speed) {
+        *cache = None;
+    }
+    if cache.is_none() {
+        *cache = Some(Piper::start(p.speed)?);
+    }
+    let mut wav = cache.as_mut().expect("vừa gán ở trên").synth(text)?;
+    piper::apply_gain(&mut wav, p.volume);
+    Ok(wav)
+}
+
 fn synthesize(
     cache: &mut Option<Speaker>,
     p: &Params,
@@ -214,5 +266,55 @@ fn synthesize(
 fn play_blocking(wav: &[u8]) {
     unsafe {
         let _ = PlaySoundW(PCWSTR(wav.as_ptr() as *const u16), None, SND_MEMORY | SND_SYNC);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(engine: &str) -> Params {
+        Params {
+            engine: engine.into(),
+            voice_name: "Microsoft An".into(),
+            speed: 1.0,
+            volume: 100,
+        }
+    }
+
+    fn sample_rate(wav: &[u8]) -> u32 {
+        u32::from_le_bytes(wav[24..28].try_into().unwrap())
+    }
+
+    /// Phân biệt hai engine bằng TẦN SỐ LẤY MẪU chứ không tin lời hàm: Piper 22,05 kHz,
+    /// giọng Windows 16 kHz. Nếu `synth` lỡ gọi nhầm engine thì con số này lộ ra ngay.
+    /// Cần đã tải Piper (chạy `piper::tests::duong_that_tai_va_doc_duoc` trước).
+    #[test]
+    #[ignore]
+    fn chon_dung_engine_theo_config() {
+        crate::ensure_com();
+        assert!(piper::ready(), "chưa tải Piper — chạy test duong_that_tai_va_doc_duoc trước");
+        let (mut sp, mut pi) = (None, None);
+
+        let w = synth(&mut sp, &mut pi, &params("piper"), "Cây cầu cũ đang sụp đổ").unwrap();
+        assert_eq!(sample_rate(&w), 22_050, "chọn piper nhưng không ra tiếng của piper");
+
+        let w = synth(&mut sp, &mut pi, &params("windows"), "Cây cầu cũ đang sụp đổ").unwrap();
+        assert_ne!(sample_rate(&w), 22_050, "chọn giọng Windows nhưng vẫn ra tiếng piper");
+        // Đổi về giọng Windows phải THẢ tiến trình con, không để nó ngồi ăn RAM.
+        assert!(pi.is_none());
+    }
+
+    /// Lưới an toàn: Piper lỗi thì câu đó phải ra bằng giọng Windows, KHÔNG được im.
+    /// Câu rỗng là cách ép `Piper::synth` trả Err mà không phải phá hỏng file cài.
+    #[test]
+    #[ignore]
+    fn piper_loi_thi_lui_ve_giong_windows() {
+        crate::ensure_com();
+        assert!(piper::ready(), "chưa tải Piper");
+        let (mut sp, mut pi) = (None, None);
+        let w = synth(&mut sp, &mut pi, &params("piper"), "   ").expect("phải có tiếng, không Err");
+        assert_eq!(&w[..4], b"RIFF");
+        assert_ne!(sample_rate(&w), 22_050, "lẽ ra phải là giọng Windows");
     }
 }

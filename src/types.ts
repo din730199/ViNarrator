@@ -20,6 +20,7 @@ export type Config = {
   llm_model: string;
   llm_api_key: string;
   llm_context_lines: number;
+  tts_engine: string;
   voice_name: string;
   speed: number;
   volume: number;
@@ -40,6 +41,13 @@ export const MODES: { value: string; label: string }[] = [
 export const ENGINES: { value: string; label: string }[] = [
   { value: 'oneocr', label: 'OneOCR — chính xác hơn (cần Win11)' },
   { value: 'windows', label: 'Windows OCR — nhẹ, nhanh hơn' },
+];
+
+// Đo trên máy thật, cùng một câu: Piper 22 kHz tổng hợp 0,31s cho 6,8s tiếng (RTF 0,05) —
+// nhanh ngang giọng Windows dù là mạng neural. Đổi lại phải tải ~82 MB ở lần đầu bật.
+export const TTS_ENGINES: { value: string; label: string }[] = [
+  { value: 'windows', label: 'Giọng Windows — có sẵn, 0 MB' },
+  { value: 'piper', label: 'Piper — giọng neural, tự nhiên hơn (tải ~82 MB)' },
 ];
 
 // Provider dùng chung API OpenAI (`/chat/completions`) nên chỉ khác base_url + model.

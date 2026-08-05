@@ -4,6 +4,7 @@ mod dedup;
 mod narrator;
 mod ocr;
 mod oneocr;
+mod piper;
 mod speech_queue;
 mod translate;
 mod tts;
@@ -93,6 +94,38 @@ fn set_tuning(
 ) -> Config {
     n.set_tuning(interval_ms, min_line_len, min_clean_ratio, fuzzy_threshold);
     n.config()
+}
+
+/// engine: "windows" | "piper". Lần đầu chọn Piper phải tải ~82 MB — làm ở thread riêng và
+/// báo qua event, KHÔNG chặn command: chặn ở đây thì UI đơ suốt thời gian tải.
+/// Đổi config trước, tải sau: tải hỏng thì `tts.rs` tự lùi về giọng Windows, không câm.
+#[tauri::command]
+fn set_tts_engine(app: AppHandle, n: tauri::State<Narrator>, engine: String) -> Config {
+    n.set_tts_engine(engine.clone());
+    if engine == "piper" && !piper::ready() {
+        std::thread::spawn(move || {
+            let _ = app.emit("status", "Đang tải giọng Piper (~82 MB, chỉ lần đầu)...");
+            match piper::ensure_runtime() {
+                Ok(()) => {
+                    let _ = app.emit("status", "Đã tải xong giọng Piper — sẵn sàng");
+                    let _ = app.emit("warn", String::new());
+                }
+                Err(e) => {
+                    let _ = app.emit(
+                        "warn",
+                        format!("Không tải được Piper: {e} — tạm đọc bằng giọng Windows"),
+                    );
+                }
+            }
+        });
+    }
+    n.config()
+}
+
+/// Đã có sẵn runtime Piper chưa — UI dùng để biết có phải cảnh báo "sẽ tải 82 MB" hay không.
+#[tauri::command]
+fn piper_ready() -> bool {
+    piper::ready()
 }
 
 #[tauri::command]
@@ -219,6 +252,8 @@ pub fn run() {
             set_engine,
             set_translate,
             set_tuning,
+            set_tts_engine,
+            piper_ready,
             set_voice,
             set_speed,
             set_volume,

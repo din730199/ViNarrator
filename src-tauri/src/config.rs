@@ -62,6 +62,10 @@ pub struct Config {
     /// Số câu trước gửi kèm cho LLM để chọn xưng hô nhất quán. 0 = tắt (rẻ token, nhanh hơn).
     pub llm_context_lines: usize,
 
+    /// "windows" (Windows.Media.SpeechSynthesis, có sẵn) | "piper" (giọng neural, tải ~82 MB
+    /// ở lần đầu bật). Chọn "piper" mà chưa tải xong thì vẫn đọc bằng giọng Windows.
+    pub tts_engine: String,
+    /// Chỉ áp cho engine "windows" — Piper chỉ có một giọng (vi_VN-vais1000).
     pub voice_name: String,
     /// bội số 0.5..2.0
     pub speed: f64,
@@ -98,6 +102,9 @@ impl Default for Config {
             llm_model: "llama-3.3-70b-versatile".into(),
             llm_api_key: String::new(),
             llm_context_lines: 3,
+            // Mặc định giọng có sẵn: cài xong là chạy được ngay, không bắt tải 82 MB mới nghe
+            // được câu đầu tiên. Ai muốn giọng tự nhiên hơn thì tự bật Piper trên UI.
+            tts_engine: "windows".into(),
             voice_name: "Microsoft An".into(),
             speed: 1.0,
             volume: 100,
@@ -197,6 +204,10 @@ mod tests {
         assert_eq!(c.volume, 40);
         assert_eq!(c.interval_ms, Config::default().interval_ms);
         assert_eq!(c.min_clean_ratio, 0.6);
+        // config có trước khi thêm Piper -> phải về giọng Windows, KHÔNG được rơi vào chuỗi
+        // rỗng rồi đọc câm (tts.rs so bằng == "piper" nên chuỗi lạ vẫn an toàn, nhưng UI
+        // sẽ hiện dropdown trống).
+        assert_eq!(c.tts_engine, "windows");
     }
 
     #[test]
