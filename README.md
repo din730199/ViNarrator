@@ -218,12 +218,41 @@ ngữ. Gom lại rồi mới cắt theo dấu câu thật là về đúng một 
 **Giá CPU: RTF 0,055 — khoảng 5,5% một nhân.** Đây là con số phải đo trước khi làm, vì khác OCR
 (chạy 16–73 ms mỗi 700 ms, có nghỉ), nhận dạng streaming phải nuốt 100% âm thanh liên tục.
 
-**App tự nghe chính nó.** ViNarrator phát tiếng Việt ra loa, loopback nghe cả tiếng đó. Không
-chặn thì nó nhận dạng giọng đọc của mình → dịch → đọc lại → lặp vô hạn. Nên có cổng chặn suốt
-lúc đang đọc, giữ thêm 300 ms cho thiết bị xả đệm.
+### App tự nghe chính nó — và vì sao bịt tai là sai
+
+ViNarrator phát tiếng Việt ra loa, mà loopback nghe cả tiếng đó. Không xử lý thì nó nhận dạng
+giọng đọc của mình → dịch → đọc lại → lặp vô hạn.
+
+Bản đầu chặn bằng cách **bịt tai suốt lúc đang đọc**. Chống được vòng lặp, nhưng đọc một câu
+tiếng Việt mất xấp xỉ đúng thời gian câu tiếng Anh gốc, nên app câm mất khoảng một nửa:
+
+| | Game nói | App làm gì | Tai |
+|---|---|---|---|
+| 0–3 s | câu **A** | nghe | mở |
+| 3–3,5 s | câu **B** bắt đầu | dịch A | mở |
+| 3,5–6,5 s | câu **B** tiếp | **đọc A** | **BỊT** |
+| 6,8 s | câu **C** | nghe | mở |
+
+Câu B mất trắng — mà không chỉ phần tiếng lúc bịt tai: lúc mở lại còn `reset` bộ nhận dạng nên
+đoạn đầu B đã nghe được cũng bị vứt. Thực tế nghe được A, C, E, G.
+
+Cách đúng nằm ở **tầng bắt tiếng**, không phải canh giờ. Windows 10 20H1 trở lên cho dựng
+`IAudioClient` trên thiết bị ảo `VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK` với
+`PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` và PID của chính mình: dòng tiếng nhận được
+chứa mọi thứ máy đang phát **trừ cây tiến trình ViNarrator**. Bịt tai thành thừa, nghe 100% thời
+gian, và vòng lặp tự-nghe-mình trở thành bất khả thi về mặt cấu trúc.
+
+`cpal` không mở được đường này nên phần đó gọi WASAPI trực tiếp (`src-tauri/src/loopback.rs`,
+không thêm thư viện — crate `windows` vốn đã có sẵn cho OCR/TTS). Máy cũ hơn thì tự lùi về cpal
++ bịt tai như cũ và báo lên thanh trạng thái.
+
+Test `loopback::tests::khong_nghe_thay_tieng_cua_chinh_minh` phát tiếng từ chính tiến trình đó
+qua **cả hai đường phát của app** (`wave_out` cho VieNeu, `PlaySoundW` cho giọng Windows) rồi
+soi biên độ bắt được: 0,0000. Đã chạy đỏ để chắc test phân biệt được — đổi sang
+`INCLUDE_TARGET_PROCESS_TREE` thì đỉnh nhảy lên 0,634.
 
 **Phải mồi im lặng trước khi nghe.** Zipformer khởi động với bộ đệm ngữ cảnh trái bằng 0 nên nuốt
-mất đoạn đầu — đo trên file mẫu chính thức:
+mất đoạn đầu. Model EN hiện tại không còn cần, nhưng model đa ngữ trước đây thì cần thật:
 
 | | Nghe ra |
 |---|---|

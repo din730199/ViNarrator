@@ -48,6 +48,9 @@ tungstenite = { version = "0.24", default-features = false, features = [
 
 # Windows-only: OCR + TTS đều là WinRT nên app này chỉ chạy Windows (khai ở [dependencies] cho đúng).
 # Media_Core: cần cho SynthesizeTextToStreamAsync. Win32_Media_Audio: PlaySoundW (thay winsound).
+# Macro `implement` (loopback.rs dựng một đối tượng COM) sinh code trỏ thẳng vào `windows_core`,
+# nên crate đó phải có tên ở đây chứ không mượn qua `windows::core` được.
+windows-core = "0.62"
 windows = { version = "0.62", features = [
   # ApplicationModel + Management_Deployment: hỏi vị trí gói Snipping Tool. Bắt buộc phải qua
   # PackageManager vì user thường KHÔNG liệt kê được C:\Program Files\WindowsApps (Access denied).
@@ -63,6 +66,10 @@ windows = { version = "0.62", features = [
   "Storage_Streams",
   "Win32_Media_Audio",
   "Win32_System_Com",
+  # Bắt loopback LOẠI TRỪ tiến trình mình (xem loopback.rs). ActivateAudioInterfaceAsync đòi
+  # gói tham số vào PROPVARIANT kiểu VT_BLOB -> cần cả StructuredStorage lẫn Variant.
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
   # CloseHandle/HANDLE/WAIT_OBJECT_0 và CreateEventW/WaitForSingleObject của hàng đợi phát
   # (xem wave_out.rs).
   "Win32_Foundation",

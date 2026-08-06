@@ -17,7 +17,11 @@
 //!
 //! **Cái phải xử lý thay vào đó: app tự nghe chính nó.** ViNarrator phát tiếng Việt ra loa, mà
 //! loopback nghe tất cả những gì loa phát — kể cả tiếng của chính nó. Không chặn thì nó nhận
-//! dạng giọng đọc của mình, dịch, rồi đọc lại, lặp vô hạn. Xem [`Cong`].
+//! dạng giọng đọc của mình, dịch, rồi đọc lại, lặp vô hạn.
+//!
+//! Đường chính giải quyết chuyện đó ở **tầng bắt tiếng**: [`crate::loopback`] xin Windows một
+//! dòng tiếng đã loại sẵn cây tiến trình của app, nên không có gì để chặn. Cổng [`Cong`] chỉ
+//! còn dùng cho máy quá cũ phải lùi về cpal.
 
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -34,7 +38,7 @@ use sherpa_onnx::{
 };
 
 use crate::runtime::{self, NO_WINDOW};
-use crate::speechmatics;
+use crate::{loopback, speechmatics};
 
 /// Model **chỉ tiếng Anh** `streaming-zipformer-en-2023-06-21` (encoder+joiner int8, decoder fp32).
 ///
@@ -94,8 +98,14 @@ const PUNCT_FILES: [(&str, u64); 2] = [(PUNCT_MODEL, 7_490_500), (PUNCT_VOCAB, 1
 /// khỏi độ trễ của mọi câu bỏ lửng.
 const IM_CHOT: Duration = Duration::from_millis(1200);
 
-/// Nạp sherpa theo từng mẩu ~67ms. Nhỏ hơn thì tốn phí gọi hàm, lớn hơn thì trễ chữ.
-const CHUNK: usize = 3200;
+/// Nạp sherpa theo từng mẩu 100ms. Nhỏ hơn thì tốn phí gọi hàm, lớn hơn thì trễ chữ.
+///
+/// **Tính theo tần số chứ không phải số mẫu cố định.** Trước để cứng 3200 mẫu, hợp với 48 kHz
+/// của cpal (~67ms); nhưng đường bắt tiếng mới xin thẳng 16 kHz, cùng con số đó thành 200ms —
+/// gấp ba, và mốc ngắt câu cũng thô đi đúng chừng ấy.
+fn chunk(sr: u32) -> usize {
+    sr as usize / 10
+}
 
 /// Mồi bộ nhận dạng bằng ngần này im lặng trước khi cho nghe tiếng thật — xem [`mo_stream`].
 const MOI_GIAY: f32 = 1.0;
@@ -444,8 +454,37 @@ impl Cong {
     }
 }
 
+/// Nguồn tiếng đang mở. Chỉ để **giữ cho sống**: thả ra là đóng loopback, nên không đọc field
+/// nào cả — cả hai bản đều dọn mình trong `Drop`.
+#[allow(dead_code)]
+enum Nguon {
+    /// Đường TỐT: loopback loại trừ chính app, không cần bịt tai — xem [`crate::loopback`].
+    Rieng(loopback::Tieng),
+    /// Đường lùi: cpal nghe cả tiếng của chính app, nên **phải** bịt tai lúc TTS đọc.
+    Chung(cpal::Stream),
+}
+
+/// Mở nguồn tiếng, ưu tiên đường loại trừ chính app.
+///
+/// Trả về `(nguồn, tần số, có phải bịt tai không)`. Máy cũ hơn Win10 20H1 thì lùi về cpal và
+/// bịt tai như bản trước — mất chừng nửa số câu thoại, nhưng còn hơn không nghe được gì.
+fn mo_nguon(tx: Sender<Vec<f32>>) -> Result<(Nguon, u32, bool), String> {
+    match loopback::mo(tx.clone()) {
+        Ok(t) => Ok((Nguon::Rieng(t), loopback::SR, false)),
+        Err(e) => {
+            eprintln!("[ASR] không bắt riêng được tiếng game ({e}) -> lùi về cpal + bịt tai");
+            let (st, sr) = mo_loopback(tx)?;
+            st.play().map_err(|e| format!("không bật được loopback: {e}"))?;
+            Ok((Nguon::Chung(st), sr, true))
+        }
+    }
+}
+
 /// Mở loopback: thiết bị PHÁT mặc định, mở ở chế độ input. Trên Windows (WASAPI) đây chính là
 /// cách bắt "mọi thứ đang phát ra loa" mà không cần Stereo Mix hay driver ảo.
+///
+/// **Chỉ còn là đường lùi.** Nó nghe cả tiếng của chính app nên kéo theo cả cái cổng bịt tai —
+/// xem [`crate::loopback`] để biết vì sao chỗ đó đắt.
 fn mo_loopback(tx: Sender<Vec<f32>>) -> Result<(cpal::Stream, u32), String> {
     let host = cpal::default_host();
     let dev = host
@@ -511,8 +550,9 @@ fn nap(
     may: &May,
     ra: &dyn Fn(String),
 ) {
-    while buf.len() >= CHUNK {
-        let m: Vec<f32> = buf.drain(..CHUNK).collect();
+    let n = chunk(sr);
+    while buf.len() >= n {
+        let m: Vec<f32> = buf.drain(..n).collect();
         st.accept_waveform(sr as i32, &m);
         // Giải mã CHO HẾT rồi mới ngó mốc ngắt — đúng thứ tự trong ví dụ C++ của sherpa.
         //
@@ -764,7 +804,7 @@ pub fn run(
     bao: &dyn Fn(String),
 ) -> Result<(), String> {
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
-    let (stream, sr) = mo_loopback(tx)?;
+    let (nguon, sr, bit_tai) = mo_nguon(tx)?;
     let mut nao: Box<dyn Nao> = if engine == "speechmatics" {
         bao("Đang kết nối Speechmatics…".into());
         let phien = speechmatics::Phien::mo(key, ngon_ngu)?;
@@ -782,12 +822,12 @@ pub fn run(
         let may = May { rec: setup(&d)?, punct: nap_dau_cau(&d) };
         let st = mo_stream(&may.rec, sr);
         bao(format!(
-            "Đang nghe tiếng game ({sr} Hz) — nói tiếng Anh sẽ được dịch{}",
-            if may.punct.is_some() { "" } else { " · THIẾU model dấu câu, câu sẽ rất dài" }
+            "Đang nghe tiếng game ({sr} Hz) — nói tiếng Anh sẽ được dịch{}{}",
+            if may.punct.is_some() { "" } else { " · THIẾU model dấu câu, câu sẽ rất dài" },
+            if bit_tai { " · máy cũ: phải bịt tai lúc app đọc nên sẽ sót câu" } else { "" }
         ));
         Box::new(MayLocal { may, st })
     };
-    stream.play().map_err(|e| format!("không bật được loopback: {e}"))?;
 
     let mut buf = Vec::<f32>::new();
     let mut cong = Cong::default();
@@ -796,7 +836,10 @@ pub fn run(
     while !stop.load(Ordering::Relaxed) {
         vet(&rx, &mut buf);
         let gio = Instant::now();
-        match cong.trang_thai(tts_dang_doc.load(Ordering::Relaxed), gio) {
+        // `bit_tai` sai (đường thường) -> cổng luôn mở, vì dòng tiếng đã không chứa tiếng của
+        // app rồi. Chỉ máy phải lùi về cpal mới còn phải canh giờ.
+        let tu_noi = bit_tai && tts_dang_doc.load(Ordering::Relaxed);
+        match cong.trang_thai(tu_noi, gio) {
             // Tiếng của chính app — KHÔNG được nhận dạng, nếu không thì nghe mình đọc rồi dịch
             // rồi đọc lại, lặp vô hạn. Mỗi bộ não xử lý quãng này một kiểu, xem `Nao::cam`.
             Cua::Dong => {
@@ -820,7 +863,8 @@ pub fn run(
     }
     // Câu thoại cuối trước lúc bấm dừng vẫn phải được đọc — kể cả khi vừa đứt kết nối.
     nao.xa(&mut buf, sr, ra);
-    // stream drop ở đây -> đóng loopback.
+    // nguon drop ở đây -> đóng loopback.
+    drop(nguon);
     match loi {
         Some(e) => Err(e),
         None => Ok(()),
@@ -979,7 +1023,7 @@ mod tests {
         let rec = setup(&dir()).unwrap();
         let st = mo_stream(&rec, sr);
         let mut vt = 0usize;
-        for m in mau.chunks(CHUNK) {
+        for m in mau.chunks(chunk(sr)) {
             st.accept_waveform(sr as i32, m);
             vt += m.len();
             while rec.is_ready(&st) {

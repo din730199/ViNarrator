@@ -2,6 +2,7 @@ mod asr;
 mod capture;
 mod config;
 mod dedup;
+mod loopback;
 mod narrator;
 mod ocr;
 mod oneocr;
