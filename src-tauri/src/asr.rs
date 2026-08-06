@@ -38,7 +38,7 @@ use sherpa_onnx::{
 };
 
 use crate::runtime::{self, NO_WINDOW};
-use crate::{loopback, speechmatics};
+use crate::{loopback, nhat_ky, speechmatics};
 
 /// Model **chỉ tiếng Anh** `streaming-zipformer-en-2023-06-21` (encoder+joiner int8, decoder fp32).
 ///
@@ -547,6 +547,10 @@ fn vet(rx: &Receiver<Vec<f32>>, buf: &mut Vec<f32>) -> f32 {
 const NGUONG_TIENG: f32 = 0.001;
 const IM_LAU: Duration = Duration::from_secs(20);
 
+/// Ghi một dòng biên độ vào nhật ký chẩn đoán mỗi ngần này. Đủ dày để đối chiếu với câu app đọc,
+/// đủ thưa để không phình file.
+const NHIP_GHI: Duration = Duration::from_secs(2);
+
 /// Ngóng xem có nghe thấy gì không.
 ///
 /// **Vì sao cần.** Nếu game xuất tiếng ở chế độ WASAPI độc quyền thì âm thanh đi thẳng xuống
@@ -629,6 +633,9 @@ fn nap(
 fn chot(rec: &OnlineRecognizer, st: &OnlineStream, may: &May, ra: &dyn Fn(String)) {
     let text = rec.get_result(st).map(|r| r.text).unwrap_or_default();
     let t = text.trim();
+    if !t.is_empty() {
+        nhat_ky::ghi("nghe", format_args!("(máy) {t:?}"));
+    }
     // Bỏ mẩu rác chỉ có dấu câu — endpoint chốt trên đoạn cực ngắn hay ra token vụn.
     if t.chars().any(char::is_alphanumeric) {
         let (cau, con) = chia_cau(&may.dau_cau(t));
@@ -765,6 +772,7 @@ impl Nao for MayNgoai {
                     self.gom.con_noi(gio);
                 }
                 for c in chu {
+                    nhat_ky::ghi("nghe", format_args!("(Speechmatics) {c:?}"));
                     self.gom.them(&c, gio, ra);
                 }
                 Ok(())
@@ -882,12 +890,43 @@ pub fn run(
     let mut cong = Cong::default();
     let mut ngong = Ngong::moi(Instant::now());
     let mut loi = None;
+    // Đối chiếu "app đang đọc gì" với "lúc đó có tiếng thật không" — xem `crate::nhat_ky`.
+    let mut nhip_ghi = Instant::now();
+    let mut dinh_ky = 0.0f32;
+
+    // Mỗi câu đẩy đi đều ghi lại, để biết khâu nào đẻ ra nó. Che luôn `ra` để không có đường
+    // nào lỡ đi vòng qua chỗ ghi này.
+    let ghi_ra = |s: String| {
+        nhat_ky::ghi("cau", format_args!("{s:?}"));
+        ra(s);
+    };
+    let ra: &dyn Fn(String) = &ghi_ra;
+
+    nhat_ky::ghi(
+        "mo",
+        format_args!("nguồn={} {sr} Hz · bịt tai={bit_tai}", if engine == "speechmatics" {
+            "Speechmatics"
+        } else {
+            "máy"
+        }),
+    );
 
     while !stop.load(Ordering::Relaxed) {
         let dinh = vet(&rx, &mut buf);
         let gio = Instant::now();
         let dang_doc = tts_dang_doc.load(Ordering::Relaxed);
         ngong.nhip(dinh, dang_doc, gio, bao);
+        dinh_ky = dinh_ky.max(dinh);
+        if gio.duration_since(nhip_ghi) >= NHIP_GHI {
+            nhat_ky::ghi(
+                "tieng",
+                format_args!(
+                    "đỉnh {dinh_ky:.4}{}",
+                    if dang_doc { " · app đang đọc" } else { "" }
+                ),
+            );
+            (nhip_ghi, dinh_ky) = (gio, 0.0);
+        }
         // `bit_tai` sai (đường thường) -> cổng luôn mở, vì dòng tiếng đã không chứa tiếng của
         // app rồi. Chỉ máy phải lùi về cpal mới còn phải canh giờ.
         let tu_noi = bit_tai && dang_doc;
