@@ -35,7 +35,7 @@ pub struct Config {
 
     /// Lấy lời thoại từ đâu: "screen" (OCR vùng phụ đề) | "audio" (nghe loopback rồi nhận
     /// dạng tại chỗ). "audio" CHỈ nghe được tiếng Anh — chế độ zh vẫn phải dùng "screen".
-    /// Chưa tải model (~41 MB) thì tự chạy như "screen", không câm.
+    /// Chưa tải model (~198 MB) thì tự chạy như "screen", không câm.
     pub source: String,
 
     /// Nghe bằng gì: "local" (model chạy máy, chỉ tiếng Anh, không cần mạng) |

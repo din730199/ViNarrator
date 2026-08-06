@@ -131,7 +131,7 @@ fn xin_cai(co: &'static AtomicBool) -> Option<KhoaCai> {
     (!co.swap(true, Ordering::SeqCst)).then(|| KhoaCai(co))
 }
 
-/// source: "screen" | "audio". Lần đầu chọn "audio" phải tải model ~41 MB — tải ở thread riêng
+/// source: "screen" | "audio". Lần đầu chọn "audio" phải tải model ~198 MB — tải ở thread riêng
 /// như VieNeu. Đổi config trước, tải sau: chưa tải xong thì `narrator` vẫn chạy đường OCR.
 #[tauri::command]
 fn set_source(app: AppHandle, n: tauri::State<Narrator>, source: String) -> Config {
@@ -147,7 +147,7 @@ fn set_source(app: AppHandle, n: tauri::State<Narrator>, source: String) -> Conf
         let bao = |s: String| {
             let _ = app.emit("status", s);
         };
-        bao("Đang tải model nghe tiếng Anh (~41 MB, chỉ lần đầu)…".into());
+        bao("Đang tải model nghe tiếng Anh (~198 MB, chỉ lần đầu)…".into());
         match asr::ensure_model(&bao) {
             Ok(()) => bao("Đã tải xong — bật công tắc để bắt đầu nghe".into()),
             Err(e) => {
@@ -168,7 +168,7 @@ fn set_asr(n: tauri::State<Narrator>, engine: String, key: String, language: Str
     n.config()
 }
 
-/// Model nghe đã tải chưa — UI dùng để biết có phải báo "sẽ tải 41 MB" hay không.
+/// Model nghe đã tải chưa — UI dùng để biết có phải báo "sẽ tải 198 MB" hay không.
 #[tauri::command]
 fn asr_ready() -> bool {
     asr::ready()

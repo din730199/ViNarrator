@@ -180,15 +180,29 @@ Nguồn âm thanh có hai bộ não:
 
 | Nghe bằng | Cần gì | Đánh đổi |
 |---|---|---|
-| **Chạy trên máy** (mặc định) | tải 347 MB | miễn phí, không cần mạng, **không gửi gì ra ngoài** · nghe được Anh + Trung/Nhật/Hàn · ~11% một nhân |
+| **Chạy trên máy** (mặc định) | tải 198 MB | miễn phí, không cần mạng, **không gửi gì ra ngoài** · **chỉ tiếng Anh** · ~5,5% một nhân |
 | **Speechmatics** | API key | nghe chuẩn hơn khi nhạc nền to, nhiều thứ tiếng, chữ trả về có sẵn dấu câu · **lời thoại được gửi lên máy chủ của họ** |
 
 Bản Speechmatics dùng WebSocket **đồng bộ** (`tungstenite`), không kéo tokio: khâu nghe vốn đã
 chạy trong thread riêng nên thêm cả một runtime async chỉ để phục vụ một socket là thừa.
 
 Nguồn âm thanh nghe **loopback** (mọi thứ đang phát ra loa) rồi nhận dạng tại chỗ bằng
-sherpa-onnx streaming zipformer EN 20M — offline, không key, không quota. Câu nghe được đi vào
-đúng đường dịch + đọc của nguồn màn hình.
+sherpa-onnx streaming zipformer `en-2023-06-21` — offline, không key, không quota. Câu nghe được
+đi vào đúng đường dịch + đọc của nguồn màn hình.
+
+**Vì sao model chỉ-tiếng-Anh chứ không phải bản đa ngữ.** Đo trên hai file mẫu của sherpa, cùng
+cấu hình, chỉ đổi model:
+
+| | đa ngữ `multi-2025-02-10` | EN `en-2023-06-21` |
+|---|---|---|
+| `1.wav` | `God` … `Given her a lovely child` … `a blessed soul in he` | `God as a direct consequence of the sin, which man thus punished, had given her a love`/`Ly Child` … `a blessed soul in heaven.` |
+| CPU | RTF 0,113 | **RTF 0,055** |
+| Tải | 339 MB | **190 MB** |
+
+Bản đa ngữ nuốt hẳn vế `as a direct consequence of the sin which man thus punished had` — nó đổi
+độ chính xác tiếng Anh lấy khả năng đa ngôn ngữ. Bản EN train trên **LibriSpeech + GigaSpeech**;
+GigaSpeech là podcast/YouTube, gần tiếng game hơn hẳn sách nói thu phòng thu. Muốn nghe tiếng
+Trung/Nhật bằng nguồn âm thanh thì dùng Speechmatics, hoặc dùng nguồn màn hình.
 
 ### Ba khâu nối tiếp, thiếu một là hỏng
 
@@ -201,7 +215,7 @@ nên thực tế bắt được `But` rồi `Me to get away from the information
 `I` rồi `Think it do it…`. Dịch riêng từng mẩu thì mẩu đầu ra "Nhưng" cụt lủn, mẩu sau mất chủ
 ngữ. Gom lại rồi mới cắt theo dấu câu thật là về đúng một câu.
 
-**Giá CPU: RTF 0,113 — khoảng 11% một nhân.** Đây là con số phải đo trước khi làm, vì khác OCR
+**Giá CPU: RTF 0,055 — khoảng 5,5% một nhân.** Đây là con số phải đo trước khi làm, vì khác OCR
 (chạy 16–73 ms mỗi 700 ms, có nghỉ), nhận dạng streaming phải nuốt 100% âm thanh liên tục.
 
 **App tự nghe chính nó.** ViNarrator phát tiếng Việt ra loa, loopback nghe cả tiếng đó. Không

@@ -40,8 +40,9 @@ export const MODES: { value: string; label: string }[] = [
   { value: 'zh', label: 'Đọc bản dịch (Trung→Việt)' },
 ];
 
-// Lấy lời thoại từ đâu. Nghe tiếng đo được RTF 0,023 — khoảng 2,3% một nhân, chạy cùng game
-// thoải mái. Nhưng model chỉ biết tiếng Anh nên chế độ Trung→Việt phải dùng màn hình.
+// Lấy lời thoại từ đâu. Nghe tiếng đo được RTF 0,055 — khoảng 5,5% một nhân, chạy cùng game
+// thoải mái. Bản chạy máy chỉ biết tiếng Anh nên chế độ Trung→Việt phải dùng màn hình, hoặc
+// chuyển sang Speechmatics.
 export const SOURCES: { value: string; label: string; ghi_chu: string }[] = [
   {
     value: 'screen',
@@ -55,13 +56,13 @@ export const SOURCES: { value: string; label: string; ghi_chu: string }[] = [
   },
 ];
 
-// Nghe bằng gì. Bản chạy máy đo được RTF 0,113; Speechmatics đẩy tiếng lên mạng nên CPU gần 0
+// Nghe bằng gì. Bản chạy máy đo được RTF 0,055; Speechmatics đẩy tiếng lên mạng nên CPU gần 0
 // nhưng lời thoại rời khỏi máy.
 export const ASR_ENGINES: { value: string; label: string; ghi_chu: string }[] = [
   {
     value: 'local',
     label: 'Chạy trên máy — miễn phí',
-    ghi_chu: 'tải 347 MB · nghe được cả Anh lẫn Trung/Nhật · không gửi gì ra ngoài · ~11% một nhân',
+    ghi_chu: 'tải 198 MB · CHỈ tiếng Anh · không gửi gì ra ngoài · ~5,5% một nhân',
   },
   {
     value: 'speechmatics',
@@ -70,7 +71,7 @@ export const ASR_ENGINES: { value: string; label: string; ghi_chu: string }[] = 
   },
 ];
 
-// Mã ngôn ngữ Speechmatics. Bản chạy máy bỏ qua, luôn là tiếng Anh.
+// Mã ngôn ngữ CHỈ dành cho Speechmatics. Bản chạy máy bỏ qua, model của nó chỉ có tiếng Anh.
 export const ASR_LANGS: { value: string; label: string }[] = [
   { value: 'en', label: 'Tiếng Anh' },
   { value: 'zh', label: 'Tiếng Trung' },

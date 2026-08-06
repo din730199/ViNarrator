@@ -4,9 +4,12 @@
 //! Chạy hoàn toàn offline, không key, không quota. Câu nhận được đi vào đúng đường dịch + đọc
 //! của nguồn màn hình — xem [`crate::narrator`].
 //!
-//! Hai bộ não để chọn: **chạy máy** (model EN 20M int8, 41 MB + 7,6 MB dấu câu — chỉ tiếng
-//! Anh, không cần mạng) và **Speechmatics** (đám mây, cần API key, nhiều thứ tiếng, chữ trả về
-//! đã có sẵn dấu câu). Phần bắt loopback, cổng chặn và gom câu dùng chung — xem [`Nao`].
+//! Hai bộ não để chọn: **chạy máy** (zipformer EN int8, 190 MB + 7,6 MB dấu câu — chỉ tiếng
+//! Anh, không cần mạng, ~5,5% một nhân) và **Speechmatics** (đám mây, cần API key, nhiều thứ
+//! tiếng, chữ trả về đã có sẵn dấu câu). Phần bắt loopback, cổng chặn và gom câu dùng chung —
+//! xem [`Nao`]. Muốn nghe tiếng Trung/Nhật bằng nguồn âm thanh thì phải dùng Speechmatics; bản
+//! chạy máy cố tình chọn model chuyên tiếng Anh vì bản đa ngữ nghe tiếng Anh kém hơn hẳn (xem
+//! [`REPO`]).
 //!
 //! **Vì sao không có khử vọng (AEC).** Bản gốc mà kiến trúc này bê về (RiTaiAI) bắt HAI luồng —
 //! mic và loopback — nên phải khử tiếng loa lọt vào mic. Ở đây không có mic, chỉ loopback, nên
@@ -33,22 +36,33 @@ use sherpa_onnx::{
 use crate::runtime::{self, NO_WINDOW};
 use crate::speechmatics;
 
-/// Model đa ngữ `streaming-zipformer-multi-2025-02-10` (encoder+joiner int8, decoder fp32).
+/// Model **chỉ tiếng Anh** `streaming-zipformer-en-2023-06-21` (encoder+joiner int8, decoder fp32).
 ///
-/// **Đổi từ bản EN 20M sang bản này vì bản nhỏ nghe không đủ chuẩn trên tiếng game thật.** Bản
-/// 20M chỉ 41 MB và rẻ hơn nhiều, nhưng nó là model streaming tiếng Anh NHỎ NHẤT mà sherpa
-/// phát hành — nghe giọng đọc sách sạch thì được, nghe thoại lẫn nhạc nền thì không.
+/// **Đo trên chính hai file mẫu của sherpa, cùng cấu hình, chỉ đổi model:**
 ///
-/// Kèm theo: bản này nghe được **nhiều thứ tiếng** (token phủ Latin + CJK + Kana + Cyrillic +
-/// Thai + Arabic), nên chế độ Trung→Việt cũng dùng được nguồn âm thanh.
+/// | | đa ngữ `multi-2025-02-10` | EN `en-2023-06-21` |
+/// |---|---|---|
+/// | `1.wav` | `God` … `Given her a lovely child` … `a blessed soul in he` | `God as a direct consequence of the sin, which man thus punished, had given her a love`/`Ly Child` … `a blessed soul in heaven.` |
+/// | CPU | RTF 0,113 = 11,3% một nhân | **RTF 0,055 = 5,5%** |
+/// | Tải | 339 MB | **190 MB** |
 ///
-/// **Nguồn tải là bản re-host của RiTaiAI.** Không tìm ra bản gốc trên release chính thức của
-/// k2-fsa lẫn HuggingFace (đã dò một loạt tên, 404/401 hết). Đây là điểm yếu thật: repo đó là
-/// của cá nhân, họ xoá release là ViNarrator hết tải được model. Tìm được bản gốc thì đổi ngay.
-const REPO: &str = "https://github.com/din730199/ritai-releases/releases/download/models";
-const ENC: &str = "encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx";
-const DEC: &str = "decoder-epoch-75-avg-11-chunk-16-left-128.onnx";
-const JOIN: &str = "joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx";
+/// Tức bản đa ngữ **nuốt hẳn vế** `as a direct consequence of the sin which man thus punished
+/// had` và cụt `in heaven` — tôi từng kết luận "model nghe không ra đoạn đó"; đúng hơn phải là
+/// *model đa ngữ* nghe không ra. Nó đổi độ chính xác tiếng Anh lấy khả năng đa ngôn ngữ, mà app
+/// này chỉ cần tiếng Anh (chế độ Trung→Việt vẫn còn nguồn màn hình).
+///
+/// Bản này train trên **LibriSpeech + GigaSpeech**. GigaSpeech là podcast/YouTube — thoại thật,
+/// có nhạc nền, giọng đời thường; gần tiếng game hơn hẳn LibriSpeech (sách nói thu phòng thu).
+/// Bản EN 20M từng thử và bị chê nghe không chuẩn là LibriSpeech-only *và* nhỏ nhất họ có.
+///
+/// Đổi luôn nguồn tải: **HuggingFace của csukuangfj**, chính người phát hành sherpa-onnx, thay
+/// cho bản re-host trên release cá nhân `din730199/ritai-releases` mà bản trước phải mượn.
+/// Không lấy tarball trên GitHub release vì nó gói kèm cả bản fp32 — 507 MB tải để giữ 190.
+const REPO: &str =
+    "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-21/resolve/main";
+const ENC: &str = "encoder-epoch-99-avg-1.int8.onnx";
+const DEC: &str = "decoder-epoch-99-avg-1.onnx";
+const JOIN: &str = "joiner-epoch-99-avg-1.int8.onnx";
 const TOKENS: &str = "tokens.txt";
 
 /// Model DẤU CÂU (`sherpa-onnx-online-punct-en-2024-08-06`, bản int8). Bắt buộc phải có, không
@@ -64,17 +78,21 @@ const PUNCT_THU_MUC: &str = "sherpa-onnx-online-punct-en-2024-08-06";
 const PUNCT_MODEL: &str = "model.int8.onnx";
 const PUNCT_VOCAB: &str = "bpe.vocab";
 
-/// Kèm kích thước THẬT (đã đối chiếu tarball chính thức với HuggingFace, khớp từng byte).
+/// Kèm kích thước THẬT (lấy từ HuggingFace API rồi đối chiếu lại bằng `HEAD` trên đúng URL tải).
 /// Dùng để bắt file tải dở: `runtime::fetch` ghi `.part` rồi mới đổi tên, nhưng nếu server cắt
 /// giữa chừng mà không báo lỗi thì vẫn ra một file ngắn mang tên đúng.
 const FILES: [(&str, u64); 4] =
-    [(ENC, 296_583_597), (DEC, 33_837_085), (JOIN, 8_257_421), (TOKENS, 195_244)];
+    [(ENC, 187_823_992), (DEC, 2_092_566), (JOIN, 259_335), (TOKENS, 5_048)];
 const PUNCT_FILES: [(&str, u64); 2] = [(PUNCT_MODEL, 7_490_500), (PUNCT_VOCAB, 149_430)];
 
 /// Đuôi câu chưa có dấu kết mà im lặng quá ngần này thì chốt luôn, đừng giữ mãi trong bộ gom.
 /// Nghe tiếng người nói ngập ngừng ("But…", "I…") sinh ra rất nhiều mẩu một từ; giữ lâu quá thì
 /// bản dịch tới muộn, chốt sớm quá thì lại chẻ vụn đúng cái tật đang phải sửa.
-const IM_CHOT: Duration = Duration::from_millis(1500);
+///
+/// 1,2s như RiTaiAI (`AGG_SILENCE_MS`). Trước để 1,5s cho chắc, nhưng giờ chữ tạm đã lùi được
+/// hạn khi người ta còn đang nói ([`Gom::con_noi`]) nên không cần phần dôi ra đó nữa — cắt 300ms
+/// khỏi độ trễ của mọi câu bỏ lửng.
+const IM_CHOT: Duration = Duration::from_millis(1200);
 
 /// Nạp sherpa theo từng mẩu ~67ms. Nhỏ hơn thì tốn phí gọi hàm, lớn hơn thì trễ chữ.
 const CHUNK: usize = 3200;
@@ -103,14 +121,16 @@ pub fn ready() -> bool {
         .all(|(f, n)| std::fs::metadata(d.join(f)).map(|m| m.len() == *n).unwrap_or(false))
 }
 
-/// Tải model (~41 MB). Gọi lại khi đã đủ thì trả về ngay.
+/// Tải model (~198 MB, gồm 7,6 MB dấu câu). Gọi lại khi đã đủ thì trả về ngay.
 pub fn ensure_model(bao: runtime::BaoTien) -> Result<(), String> {
     if ready() {
         return Ok(());
     }
     let d = dir();
     std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-    runtime::du_dia(&d, 200)?;
+    don_rac(&d);
+    // 198 MB file giữ lại + 37 MB tarball dấu câu nằm tạm cùng chỗ trước khi bóc.
+    runtime::du_dia(&d, 300)?;
     for (f, n) in FILES {
         let dest = d.join(f);
         if du(&dest, n) {
@@ -156,6 +176,27 @@ pub fn ensure_model(bao: runtime::BaoTien) -> Result<(), String> {
     Ok(())
 }
 
+/// Xoá mọi file lạ trong thư mục model.
+///
+/// **Vì đổi model là đổi luôn tên file.** Người đã cài bản đa ngữ có 339 MB mang tên
+/// `encoder-epoch-75-avg-11-…` nằm lại vĩnh viễn: [`ready`] chỉ soi [`FILES`] nên không ai
+/// nhắc, mà tên khác nhau nên tải bản mới cũng không đè lên. Chỉ chạy trên đường CÀI (đã qua
+/// `ready()` ở đầu [`ensure_model`]) nên lần chạy bình thường không đụng tới ổ đĩa.
+///
+/// Thư mục này do app tạo và chỉ chứa model, không có gì của người dùng để mất.
+fn don_rac(d: &Path) {
+    let Ok(muc) = std::fs::read_dir(d) else {
+        return;
+    };
+    for f in muc.flatten() {
+        let ten = f.file_name();
+        let giu = FILES.iter().chain(PUNCT_FILES.iter()).any(|(g, _)| ten == *g);
+        if !giu && f.path().is_file() {
+            let _ = std::fs::remove_file(f.path());
+        }
+    }
+}
+
 fn du(p: &Path, n: u64) -> bool {
     std::fs::metadata(p).map(|m| m.len() == n).unwrap_or(false)
 }
@@ -192,6 +233,8 @@ pub fn setup(d: &Path) -> Result<OnlineRecognizer, String> {
     c.model_config.transducer.joiner = Some(p(JOIN));
     c.model_config.tokens = Some(p(TOKENS));
     c.model_config.provider = Some("cpu".into());
+    // greedy_search chứ không modified_beam_search: đã thử, beam search vừa CHẬM hơn (RTF
+    // 0,129 so với 0,116) vừa ra rác — cùng file mẫu nó đẻ thêm hai mẩu "H" và "Conf" ở đầu.
     c.decoding_method = Some("greedy_search".into());
     // Ngắt câu. Đường CHÍNH là rule2: im lặng 0,8s sau khi đã nói -> chốt. Thoại game gần như
     // lúc nào cũng có nghỉ giữa các câu nên đường này gánh hầu hết.
@@ -201,12 +244,11 @@ pub fn setup(d: &Path) -> Result<OnlineRecognizer, String> {
     // dịch — chậm rõ rệt khi chơi. Về đúng 6s như RiTaiAI: thà thỉnh thoảng lệch một từ ở chỗ
     // nối còn hơn ngồi đợi.
     c.enable_endpoint = true;
-    // rule1 (im lặng mà CHƯA ra chữ nào) TẮT hẳn, khác RiTaiAI để 1,6s. Sau mỗi  model
-    // này câm chừng 2 giây để dựng lại 128 khung ngữ cảnh trái, và rule1 tưởng đó là im lặng
-    // nên chốt ra chuỗi rỗng rồi reset lần nữa — càng reset càng câm. Đo trên file mẫu:
-    //   để 1,6s -> 1.80s "GOD" · 3.80s "" · 9.80s "GIVEN HER…"  (mất một vế)
-    //   tắt      -> 1.80s "GOD" · 7.80s "GIVEN HER…"             (hết mốc rỗng)
-    // App này không cần chốt lúc chưa ai nói, nên rule1 chẳng có việc gì để làm.
+    // rule1 (im lặng mà CHƯA ra chữ nào) TẮT hẳn, khác RiTaiAI để 1,6s: app này không cần chốt
+    // lúc chưa ai nói, nên rule1 chẳng có việc gì làm ngoài việc đẻ ra mốc ngắt rỗng rồi reset
+    // theo. Với model đa ngữ trước đây nó còn tai hại thật — sau mỗi reset model đó câm 2 giây
+    // để dựng lại 128 khung ngữ cảnh trái, rule1 tưởng là im lặng nên reset tiếp, càng reset
+    // càng câm (đo được: bật thì ra `1.80s "GOD" · 3.80s "" · 9.80s "GIVEN HER…"`, mất một vế).
     c.rule1_min_trailing_silence = 100.0;
     c.rule2_min_trailing_silence = 0.8;
     c.rule3_min_utterance_length = 6.0;
@@ -216,35 +258,20 @@ pub fn setup(d: &Path) -> Result<OnlineRecognizer, String> {
 
 /// Dựng stream rồi **mồi bằng một quãng im lặng** trước khi cho nghe tiếng thật.
 ///
-/// **Đo được, không phải phòng xa.** Zipformer khởi động với bộ đệm ngữ cảnh trái bằng 0 nên
-/// nuốt mất đoạn đầu. Cùng một file mẫu, mọi thứ khác giữ nguyên:
+/// **Model EN đang dùng KHÔNG cần cái này nữa** — đo lại trên `0.wav`, mọi thứ khác giữ nguyên:
 ///
 /// | | Nghe ra |
 /// |---|---|
-/// | không mồi | `The yellow lamps would light up…` |
-/// | mồi 1s | `After early nightfall the yellow lamps would light up…` |
+/// | không mồi | `After early nightfall, the yellow lamps…` |
+/// | mồi 1s | `After early nightfall, the yellow lamps…` |
 ///
-/// Sự thật là `AFTER EARLY NIGHTFALL THE YELLOW LAMPS…` — không mồi thì **mất trắng 2 giây
-/// đầu**, và trong game đó thường là chỗ mở câu thoại.
+/// Giữ lại vì nó chỉ tốn một giây im lặng **đúng một lần lúc bật**, còn model cũ thì cần thật:
+/// bản đa ngữ `chunk-16-left-128` khởi động với 128 khung ngữ cảnh trái bằng 0 nên nuốt trắng
+/// 2 giây đầu (`The yellow lamps would light up…` — mất hẳn `After early nightfall`). Đổi model
+/// lần nữa mà bỏ mất chỗ này thì lỗi đó quay lại im lặng, nên để nguyên cho rẻ.
 ///
-/// Đã loại trừ hết nghi phạm khác trước khi kết luận: nạp nguyên khối một lần (đúng ví dụ của
-/// crate) và tắt hẳn `enable_endpoint` đều cho kết quả y hệt lúc chưa mồi.
-///
-/// **Phải mồi lại sau MỖI lần `reset`, không chỉ lúc dựng stream.** Tôi từng kết luận ngược
-/// lại dựa trên model EN 20M — sai với model đa ngữ đang dùng, vì nó mang 128 khung ngữ cảnh
-/// trái (`chunk-16-left-128`) và `reset` xoá sạch chỗ đó.
-///
-/// Soi mốc ngắt trên file mẫu 16,7s lúc chưa mồi lại thấy rõ:
-///
-/// ```text
-///  1.80s  NGAT  "GOD"
-///  3.80s  NGAT  ""          <- hai giây liền không ra chữ nào, dù chỗ đó CÓ tiếng
-///  9.80s  NGAT  "GIVEN HER A LOVELY CHILD…"
-/// ```
-///
-/// Mất trắng "AS A DIRECT CONSEQUENCE OF THE SIN WHICH MAN THUS PUNISHED HAD". Sau `reset` bộ
-/// nhận dạng câm chừng 2 giây để dựng lại ngữ cảnh, `rule1` tưởng là im lặng nên chốt ra chuỗi
-/// rỗng rồi `reset` lần nữa.
+/// Hồi đó đã loại trừ hết nghi phạm khác trước khi kết luận: nạp nguyên khối một lần (đúng ví
+/// dụ của crate) và tắt hẳn `enable_endpoint` đều cho kết quả y hệt lúc chưa mồi.
 fn moi(rec: &OnlineRecognizer, st: &OnlineStream, sr: u32) {
     st.accept_waveform(sr as i32, &vec![0.0f32; (sr as f32 * MOI_GIAY) as usize]);
     while rec.is_ready(st) {
@@ -347,6 +374,16 @@ impl Gom {
         }
         self.dem = con;
         self.han = (!self.dem.is_empty()).then_some(gio + IM_CHOT);
+    }
+
+    /// Người ta vẫn đang nói (Speechmatics còn bắn chữ tạm về) — lùi hạn chốt đuôi.
+    ///
+    /// Không có cái này thì một câu nói ngập ngừng bị chẻ đôi: máy chủ chỉ gửi bản chốt khi có
+    /// từ mới, ngập ngừng quá [`IM_CHOT`] là bộ gom hết giờ và ném nửa câu đi dịch.
+    fn con_noi(&mut self, gio: Instant) {
+        if self.han.is_some() {
+            self.han = Some(gio + IM_CHOT);
+        }
     }
 
     fn nhip(&mut self, gio: Instant, ra: &dyn Fn(String)) {
@@ -480,10 +517,7 @@ fn nap(
         // Giải mã CHO HẾT rồi mới ngó mốc ngắt — đúng thứ tự trong ví dụ C++ của sherpa.
         //
         // **Đây từng là lỗi thật.** Ban đầu tôi kiểm mốc ngắt NGAY TRONG vòng giải mã, nên
-        // `reset` chạy giữa chừng và vứt luôn phần đã nạp mà chưa kịp lấy ra. Với model nhỏ
-        // hầu như không thấy, nhưng đổi sang model lớn thì mất trắng cả vế: câu mẫu ra
-        // "God" rồi nhảy thẳng tới "Given her a lovely child…", nuốt gọn đoạn "as a direct
-        // consequence of the sin which man thus punished had" ở giữa.
+        // `reset` chạy giữa chừng và vứt luôn phần đã nạp mà chưa kịp lấy ra.
         //
         // Chỉ lấy câu ĐÃ CHỐT. Bản gốc RiTaiAI còn đẩy chữ tạm lên overlay cho người dùng
         // thấy máy đang nghe; ở đây câu chỉ đi thẳng vào khâu dịch nên chữ tạm vô dụng.
@@ -491,7 +525,7 @@ fn nap(
             rec.decode(st);
         }
         if rec.is_endpoint(st) {
-            chot(rec, st, sr, may, ra);
+            chot(rec, st, may, ra);
         }
     }
 }
@@ -503,7 +537,7 @@ fn nap(
 /// là chậm. Bản chạy máy đã có mốc ngắt riêng của bộ nhận dạng (khoảng lặng 0,8s) nên mốc đó
 /// chính là ranh giới câu rồi, chờ thêm chẳng được gì. Chỉ bản đám mây mới cần gom, vì nó bắn
 /// chữ về theo lô 1 giây bất kể câu đã hết hay chưa.
-fn chot(rec: &OnlineRecognizer, st: &OnlineStream, sr: u32, may: &May, ra: &dyn Fn(String)) {
+fn chot(rec: &OnlineRecognizer, st: &OnlineStream, may: &May, ra: &dyn Fn(String)) {
     let text = rec.get_result(st).map(|r| r.text).unwrap_or_default();
     let t = text.trim();
     // Bỏ mẩu rác chỉ có dấu câu — endpoint chốt trên đoạn cực ngắn hay ra token vụn.
@@ -533,6 +567,14 @@ trait Nao {
     fn nhip(&mut self, _gio: Instant, _ra: &dyn Fn(String)) {}
     /// Cổng vừa mở lại sau khi app đọc xong — bỏ trạng thái dở dang đi.
     fn mo_lai(&mut self) {}
+    /// Cổng ĐANG đóng: `buf` chứa tiếng của chính app, không được nhận dạng.
+    ///
+    /// Mặc định vứt luôn — bản chạy máy giữ trạng thái ngay trong tiến trình nên `mo_lai` dọn
+    /// được, mà bỏ qua quãng này còn tiết kiệm CPU đúng lúc app đang bận đọc.
+    fn cam(&mut self, buf: &mut Vec<f32>, _sr: u32, _ra: &dyn Fn(String)) -> Result<(), String> {
+        buf.clear();
+        Ok(())
+    }
 }
 
 /// Bộ nhận dạng + bộ thêm dấu câu đi liền nhau.
@@ -558,7 +600,6 @@ impl May {
 struct MayLocal {
     may: May,
     st: OnlineStream,
-    sr: u32,
 }
 
 impl Nao for MayLocal {
@@ -585,6 +626,32 @@ struct MayNgoai {
     /// Chỉ bản đám mây mới cần gom: nó bắn chữ về theo lô ~1 giây bất kể câu đã hết hay chưa,
     /// nên một câu thường tới làm nhiều mảnh.
     gom: Gom,
+    /// Giữ lại để nối lại khi đứt.
+    key: String,
+    ngon_ngu: String,
+    /// Còn được nối lại mấy lần nữa. Hết thì mới chịu thua — mạng chập chờn giữa lúc chơi là
+    /// chuyện thường, đứt một cái mà tắt luôn tính năng thì quá đỏng đảnh.
+    con_thu: u32,
+}
+
+/// Nối lại tối đa ngần này lần trong một phiên. RiTaiAI nối lại vô hạn (nó là trợ lý họp, chạy
+/// cả buổi); ở đây chặn lại để key sai hoặc hết hạn mức không thành vòng lặp gọi mạng vô tận.
+const THU_LAI: u32 = 5;
+
+impl MayNgoai {
+    /// Đứt giữa chừng thì dựng lại phiên. Tiếng trong lúc đứt coi như mất — Speechmatics tính
+    /// giờ theo tiếng đã gửi, cố gửi bù đoạn cũ vừa tốn tiền vừa làm bản dịch lệch pha.
+    fn noi_lai(&mut self, vi: &str) -> Result<(), String> {
+        if self.con_thu == 0 {
+            return Err(format!("{vi} — đã thử nối lại {THU_LAI} lần, chịu"));
+        }
+        self.con_thu -= 1;
+        eprintln!("[ASR] Speechmatics đứt ({vi}), đang nối lại…");
+        self.lo.clear();
+        self.phien = speechmatics::Phien::mo(&self.key, &self.ngon_ngu)
+            .map_err(|e| format!("nối lại Speechmatics không được: {e}"))?;
+        Ok(())
+    }
 }
 
 impl Nao for MayNgoai {
@@ -594,13 +661,42 @@ impl Nao for MayNgoai {
         let can = (sr as usize) / 4;
         while self.lo.len() >= can {
             let m: Vec<f32> = self.lo.drain(..can).collect();
-            self.phien.gui(speechmatics::ha_mau(&m, sr))?;
+            if let Err(e) = self.phien.gui(speechmatics::ha_mau(&m, sr)) {
+                return self.noi_lai(&e);
+            }
+        }
+        // Đẩy nốt phần còn kẹt trong đệm gửi từ nhịp trước.
+        if let Err(e) = self.phien.day() {
+            return self.noi_lai(&e);
         }
         let gio = Instant::now();
-        for c in self.phien.nhan()? {
-            self.gom.them(&c, gio, ra);
+        match self.phien.nhan() {
+            Ok((chu, dang_noi)) => {
+                if dang_noi {
+                    self.gom.con_noi(gio);
+                }
+                for c in chu {
+                    self.gom.them(&c, gio, ra);
+                }
+                Ok(())
+            }
+            Err(e) => self.noi_lai(&e),
         }
-        Ok(())
+    }
+
+    /// **Gửi IM LẶNG chứ không bỏ trống.** Bản chạy máy vứt quãng này đi được, bản đám mây thì
+    /// không: máy chủ dựng lại câu từ chính dòng tiếng nó nhận, cắt mất mấy giây ở giữa là hai
+    /// câu cách nhau nửa phút bị dán liền nhau không có lấy một quãng nghỉ. Nó sẽ không chốt
+    /// câu trước, rồi ghép luôn câu sau vào — đúng cái "bắt không chuẩn" thấy trên màn hình.
+    ///
+    /// Thay bằng đúng ngần ấy mẫu 0 thì dòng tiếng vẫn liên tục, máy chủ nghe thấy một quãng
+    /// lặng thật và chốt câu đang dở. Đổi lại: quãng im lặng này vẫn tính vào giờ Speechmatics.
+    /// Không tránh được — kết nối vẫn mở suốt lúc đó dù có gửi hay không.
+    /// Câu máy chủ chốt được nhờ quãng lặng này vẫn phải đi tiếp (`ra`), không được nuốt: đó
+    /// chính là câu thoại nói ngay trước lúc app cất tiếng đọc.
+    fn cam(&mut self, buf: &mut Vec<f32>, sr: u32, ra: &dyn Fn(String)) -> Result<(), String> {
+        buf.iter_mut().for_each(|m| *m = 0.0);
+        self.nghe(buf, sr, ra)
     }
 
     fn xa(&mut self, _buf: &mut Vec<f32>, _sr: u32, ra: &dyn Fn(String)) {
@@ -614,6 +710,14 @@ impl Nao for MayNgoai {
     }
 }
 
+/// **Ghi lại hai kết luận sai đã tự sửa**, để không ai đi tìm lại từ đầu. Triệu chứng: file mẫu
+/// ra "GOD" rồi nhảy thẳng tới "GIVEN HER…", nuốt gọn "AS A DIRECT CONSEQUENCE OF THE SIN WHICH
+/// MAN THUS PUNISHED HAD".
+///
+/// 1. Tưởng `reset` ăn mất vế đó. Sai: bỏ HẲN mọi lời gọi `reset` vẫn ra đúng chuỗi thiếu y hệt.
+/// 2. Kết luận tiếp "vậy là model không nghe ra, hết cách". Cũng chưa đúng — đúng ra là **model
+///    ĐA NGỮ** không nghe ra. Đổi sang model chuyên tiếng Anh thì cả vế hiện đủ. Xem [`REPO`].
+///
 /// Chốt nốt câu đang dở dang. **Gọi khi dừng hẳn.**
 ///
 /// Sherpa chỉ nhả câu ở mốc `is_endpoint`, tức là phải có quãng im đủ dài. Tiếng dứt đột ngột
@@ -625,11 +729,15 @@ fn xa(st: &OnlineStream, buf: &mut Vec<f32>, sr: u32, may: &May, ra: &dyn Fn(Str
         st.accept_waveform(sr as i32, buf);
         buf.clear();
     }
+    // Đệm nửa giây im lặng TRƯỚC khi báo hết. Zipformer cần một quãng phía sau mới quyết được
+    // từ cuối, `input_finished` không tự bù đủ nên chữ chót bị cụt: `8k.wav` ra
+    // "…less with hope than appre", thêm đệm thì ra đủ "…than apprehension.".
+    st.accept_waveform(sr as i32, &vec![0.0f32; sr as usize / 2]);
     st.input_finished();
     while may.rec.is_ready(st) {
         may.rec.decode(st);
     }
-    chot(&may.rec, st, sr, may, ra);
+    chot(&may.rec, st, may, ra);
 }
 
 /// Model xuất chữ HOA hết. Để nguyên thì LLM dịch hay tưởng là hét, còn Google Translate thì
@@ -661,7 +769,14 @@ pub fn run(
         bao("Đang kết nối Speechmatics…".into());
         let phien = speechmatics::Phien::mo(key, ngon_ngu)?;
         bao(format!("Đang nghe tiếng game qua Speechmatics ({ngon_ngu})"));
-        Box::new(MayNgoai { phien, lo: Vec::new(), gom: Gom::default() })
+        Box::new(MayNgoai {
+            phien,
+            lo: Vec::new(),
+            gom: Gom::default(),
+            key: key.to_string(),
+            ngon_ngu: ngon_ngu.to_string(),
+            con_thu: THU_LAI,
+        })
     } else {
         let d = dir();
         let may = May { rec: setup(&d)?, punct: nap_dau_cau(&d) };
@@ -670,7 +785,7 @@ pub fn run(
             "Đang nghe tiếng game ({sr} Hz) — nói tiếng Anh sẽ được dịch{}",
             if may.punct.is_some() { "" } else { " · THIẾU model dấu câu, câu sẽ rất dài" }
         ));
-        Box::new(MayLocal { may, st, sr })
+        Box::new(MayLocal { may, st })
     };
     stream.play().map_err(|e| format!("không bật được loopback: {e}"))?;
 
@@ -682,8 +797,14 @@ pub fn run(
         vet(&rx, &mut buf);
         let gio = Instant::now();
         match cong.trang_thai(tts_dang_doc.load(Ordering::Relaxed), gio) {
-            // Vứt tiếng của chính app đi, KHÔNG nạp vào bộ nhận dạng.
-            Cua::Dong => buf.clear(),
+            // Tiếng của chính app — KHÔNG được nhận dạng, nếu không thì nghe mình đọc rồi dịch
+            // rồi đọc lại, lặp vô hạn. Mỗi bộ não xử lý quãng này một kiểu, xem `Nao::cam`.
+            Cua::Dong => {
+                if let Err(e) = nao.cam(&mut buf, sr, ra) {
+                    loi = Some(e);
+                    break;
+                }
+            }
             Cua::VuaMo => nao.mo_lai(),
             Cua::Mo => {
                 if let Err(e) = nao.nghe(&mut buf, sr, ra) {
@@ -721,14 +842,17 @@ mod tests {
     /// không dùng chung với game AAA được.
     ///
     ///     VN_WAV=<file.wav> cargo test --release --lib asr::tests::do_gia -- --ignored --nocapture
+    ///
+    /// `VN_MODEL_DIR` trỏ sang thư mục model khác để đọ hai model trên cùng file — đặt file
+    /// trong đó đúng tên như [`FILES`] là chạy được.
     #[test]
     #[ignore]
     fn do_gia_cpu() {
-        assert!(ready(), "chưa có model — chạy tai_model_that trước");
         let (sr, mau) = wav_f32(&std::env::var("VN_WAV").unwrap());
         let giay = mau.len() as f32 / sr as f32;
 
-        let d = dir();
+        let d = std::env::var("VN_MODEL_DIR").map_or_else(|_| dir(), PathBuf::from);
+        assert!(d.join(TOKENS).exists(), "chưa có model — chạy tai_model_that trước");
         let may = May { rec: setup(&d).unwrap(), punct: nap_dau_cau(&d) };
         assert!(may.punct.is_some(), "thiếu model dấu câu — câu sẽ không bao giờ được chẻ");
         let st = mo_stream(&may.rec, sr);
@@ -764,8 +888,15 @@ mod tests {
         let d = dir();
         let _ = std::fs::remove_dir_all(&d);
         assert!(!ready(), "xoá rồi mà ready() vẫn true");
+        // Giả bộ máy đã cài bản đa ngữ cũ: file 339 MB mang tên khác phải bị dọn, không được
+        // nằm lại vĩnh viễn vì `ready()` chẳng bao giờ ngó tới nó.
+        std::fs::create_dir_all(&d).unwrap();
+        let cu = d.join("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx");
+        std::fs::write(&cu, b"model doi ngu cu").unwrap();
+
         ensure_model(&crate::runtime::im).expect("tải model");
         assert!(ready(), "tải xong mà ready() vẫn false — kích thước ghim trong FILES sai?");
+        assert!(!cu.exists(), "model cũ vẫn nằm lại chiếm chỗ");
         setup(&d).expect("model tải về phải dựng được bộ nhận dạng");
     }
 
@@ -803,6 +934,40 @@ mod tests {
         // Chốt xong thì hạn phải tắt, đừng bắn lại chuỗi rỗng ở mọi nhịp sau đó.
         g.nhip(t0 + IM_CHOT * 9, &f);
         assert_eq!(ra.borrow().len(), 2);
+    }
+
+    /// Người nói ngập ngừng GIỮA câu thì không được chẻ đôi câu đó. Speechmatics chỉ gửi bản
+    /// chốt khi có từ mới, nên chỗ ngập ngừng chẳng có bản chốt nào tới; nếu không nghe chữ tạm
+    /// thì bộ gom hết giờ và ném nửa câu đi dịch.
+    #[test]
+    fn chu_tam_lui_han_chot() {
+        let t0 = Instant::now();
+        let ra = std::cell::RefCell::new(Vec::<String>::new());
+        let f = |s: String| ra.borrow_mut().push(s);
+        let mut g = Gom::default();
+
+        g.them("I don't think", t0, &f);
+        // Còn nghe thấy tiếng -> lùi hạn. Qua mốc IM_CHOT ban đầu vẫn phải im.
+        for i in 1..=4 {
+            g.con_noi(t0 + IM_CHOT / 2 * i);
+            g.nhip(t0 + IM_CHOT / 2 * i, &f);
+        }
+        assert!(ra.borrow().is_empty(), "đang nói dở mà đã chẻ câu đem đi dịch");
+
+        // Nói nốt -> ra trọn câu, không phải hai mảnh.
+        let cuoi = t0 + IM_CHOT * 2;
+        g.them("we should go.", cuoi, &f);
+        assert_eq!(*ra.borrow(), ["I don't think we should go."]);
+
+        // Dứt hẳn thì hạn tính từ lần lùi cuối, vẫn phải chốt được đuôi.
+        g.them("Wait", cuoi, &f);
+        g.con_noi(cuoi);
+        g.nhip(cuoi + IM_CHOT, &f);
+        assert_eq!(ra.borrow().len(), 2, "hết tiếng rồi mà đuôi câu vẫn kẹt trong bộ gom");
+
+        // Bộ gom RỖNG thì chữ tạm không được tự dựng hạn — chốt ra chuỗi rỗng chẳng để làm gì.
+        g.con_noi(cuoi);
+        assert!(g.han.is_none(), "bộ gom rỗng mà chữ tạm vẫn dựng hạn chốt");
     }
 
     /// Chẩn đoán: in vị trí (giây) và chữ THÔ tại mỗi mốc ngắt, không qua model dấu câu.
