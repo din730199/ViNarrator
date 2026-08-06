@@ -297,7 +297,14 @@ fn speak_vieneu(
     }
     // VieNeu tự cầm khâu phát (hàng đợi waveOut liền mạch) nên không trả WAV về đây.
     // Số giây trả về chỉ dùng cho test đo khe hở.
-    cache.as_mut().expect("vừa gán ở trên").speak(text, p.volume, stop).map(|_| ())
+    //
+    // `speed` kẹp cùng biên với thanh trượt trên UI (0,5–2,0). Model không có núm tốc độ nên
+    // chỗ này giãn tiếng bằng WSOLA; ra ngoài biên đó thì WSOLA bắt đầu nghe ra tiếng vọng.
+    cache
+        .as_mut()
+        .expect("vừa gán ở trên")
+        .speak(text, p.volume, p.speed.clamp(0.5, 2.0), stop)
+        .map(|_| ())
 }
 
 fn synthesize(

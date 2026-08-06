@@ -6,6 +6,7 @@ mod ocr;
 mod oneocr;
 mod runtime;
 mod speech_queue;
+mod stretch;
 mod translate;
 mod tts;
 mod vieneu;

@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::runtime::{self, BELOW_NORMAL, NO_WINDOW};
+use crate::stretch::{self, Stretch};
 use crate::wave_out::{self, WaveOut};
 
 /// Ghim phiên bản: bản `latest` có thể đổi hành vi dòng lệnh mà không báo, còn URL bản cũ thì
@@ -329,9 +330,15 @@ impl VieNeu {
     /// mỗi lần gọi, đo được **+71,6 ms mỗi ranh giới mẩu** (tổng +0,646s cho câu 9,44s). Và
     /// `infer_stream` cắt theo *frame* chứ không theo cụm từ, nên khe đó rơi vào giữa từ.
     ///
-    /// `volume` áp thẳng lên mẫu vì VieNeu không có núm âm lượng.
-    ///
-    pub fn speak(&mut self, text: &str, volume: u8, stop: &AtomicBool) -> Result<Doc, String> {
+    /// `volume` áp thẳng lên mẫu vì VieNeu không có núm âm lượng. `speed` cũng vậy — model
+    /// không có tham số nhịp đọc nên phải giãn tiếng bằng [`Stretch`] (WSOLA, giữ cao độ).
+    pub fn speak(
+        &mut self,
+        text: &str,
+        volume: u8,
+        speed: f64,
+        stop: &AtomicBool,
+    ) -> Result<Doc, String> {
         let line = text.replace(['\r', '\n'], " ");
         let line = line.trim();
         if line.is_empty() {
@@ -343,9 +350,14 @@ impl VieNeu {
         // Mở thiết bị MỘT LẦN cho cả câu. Lỗi ở đây (không có thiết bị âm thanh) trả về
         // Err -> tts.rs lùi câu này về engine khác.
         let mut out: Option<WaveOut> = None;
+        // Một bộ giãn cho CẢ CÂU, không phải mỗi mẩu một cái — nó phải bắc cầu qua ranh giới
+        // mẩu, xem `stretch`. None = tốc độ 1x, đi thẳng không tốn gì.
+        let mut keo: Option<Stretch> = None;
+        let mut dem_ra: Vec<u8> = Vec::new();
+        let mut tan_so = 0u32;
         let mut doc = Doc::default();
         let t0 = std::time::Instant::now();
-        let ket = loop {
+        let mut ket = loop {
             match self.tin.recv_timeout(CHUNK_TIMEOUT) {
                 Ok(Tin::Chunk) => {
                     let f = self.out_dir.join(format!("{:04}.wav", self.seq));
@@ -369,11 +381,24 @@ impl VieNeu {
                     };
                     if out.is_none() {
                         doc.tre_dau = t0.elapsed();
+                        tan_so = sr;
+                        // Tần số chỉ biết được khi có mẩu đầu -> dựng bộ giãn ở đây luôn.
+                        if stretch::can_keo(speed) {
+                            keo = Some(Stretch::new(sr, speed as f32));
+                        }
                         match WaveOut::open(sr) {
                             Ok(w) => out = Some(w),
                             Err(e) => break Err(e),
                         }
                     }
+                    let pcm = match keo.as_mut() {
+                        Some(k) => {
+                            dem_ra.clear();
+                            k.push(pcm, &mut dem_ra);
+                            &dem_ra[..]
+                        }
+                        None => pcm,
+                    };
                     if let Err(e) = out.as_mut().expect("vừa mở ở trên").write(pcm, stop) {
                         break Err(e);
                     }
@@ -390,6 +415,14 @@ impl VieNeu {
                 }
             }
         };
+        // Xả nốt đuôi câu còn kẹt trong bộ giãn (~50ms). Bỏ là mỗi câu cụt phụ âm cuối.
+        if let (Some(k), Some(w), Ok(d)) = (keo.as_mut(), out.as_mut(), &mut ket) {
+            dem_ra.clear();
+            k.flush(&mut dem_ra);
+            if w.write(&dem_ra, stop).is_ok() {
+                d.giay += dem_ra.len() as f32 / (tan_so as f32 * 2.0);
+            }
+        }
         // Chờ phát hết trước khi trả về, nếu không câu sau sẽ chồng lên câu này.
         if let Some(mut w) = out {
             w.drain(stop);
@@ -430,7 +463,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         for cau in ["Coi chừng, có một con quái vật phía sau",
                     "Server Minecraft của tôi bị sập lúc ba giờ sáng"] {
-            let d = v.speak(cau, IM, &stop).expect("đọc câu");
+            let d = v.speak(cau, IM, 1.0, &stop).expect("đọc câu");
             assert!(d.giay > 0.5, "câu {cau:?} chỉ ra {:.2}s tiếng — nghi là hỏng", d.giay);
             println!("{:.2}s tiếng, mẩu đầu sau {:?}", d.giay, d.tre_dau);
         }
@@ -451,7 +484,7 @@ mod tests {
                    Cây cầu cũ đang sụp đổ trong đêm, và chưa ai từng vượt qua được cánh cổng thứ hai.";
 
         let t = std::time::Instant::now();
-        let d = v.speak(cau, IM, &stop).expect("đọc câu");
+        let d = v.speak(cau, IM, 1.0, &stop).expect("đọc câu");
         let wall = t.elapsed().as_secs_f32();
         // TRỪ độ trễ mẩu đầu: đó là chi phí cố hữu của streaming, không phải khe phát.
         let khe = wall - d.giay - d.tre_dau.as_secs_f32();
@@ -470,7 +503,7 @@ mod tests {
         let mut v = VieNeu::start("").expect("dựng worker");
         let stop = AtomicBool::new(true); // đã bấm dừng từ trước
         let d = v
-            .speak("Tất cả những gì chúng tôi thấy là các công trình bị bỏ hoang", IM, &stop)
+            .speak("Tất cả những gì chúng tôi thấy là các công trình bị bỏ hoang", IM, 1.0, &stop)
             .expect("vẫn phải rút hết tin, không được lỗi");
         assert_eq!(d.giay, 0.0, "đã dừng mà vẫn xếp {:.2}s tiếng vào hàng đợi", d.giay);
     }
