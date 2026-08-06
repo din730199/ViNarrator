@@ -76,13 +76,7 @@ impl Translator {
         if !self.enabled || text.trim().is_empty() {
             return text.to_string();
         }
-        let out = match self.via_llm(text) {
-            Some(o) => {
-                crate::nhat_ky::ghi("dich", format_args!("AI · {text:?} -> {o:?}"));
-                o
-            }
-            None => self.via_google(text),
-        };
+        let out = self.via_llm(text).unwrap_or_else(|| self.via_google(text));
         self.remember(text);
         out
     }
@@ -175,26 +169,12 @@ impl Translator {
             self.target,
             urlencoding::encode(text)
         );
-        // Hai nhánh hỏng dưới đây đều trả về NGUYÊN VĂN — tức app đọc thẳng tiếng Anh bằng giọng
-        // tiếng Việt. Nghe ra thì lạ tai chứ không giống lỗi, nên phải ghi lại rõ ràng: đây là
-        // nghi phạm số một cho triệu chứng "đọc mấy câu nghe như tiếng nước ngoài".
+        // Hai nhánh hỏng đều trả về NGUYÊN VĂN — tức app đọc thẳng tiếng Anh bằng giọng tiếng
+        // Việt, nghe ra thì lạ tai chứ không giống lỗi. Cố ý: thà lạ tai còn hơn nuốt mất câu.
         match self.client.get(&url).send().and_then(|r| r.text()) {
-            Ok(body) => match parse_google(&body) {
-                Some(o) => {
-                    crate::nhat_ky::ghi("dich", format_args!("Google · {text:?} -> {o:?}"));
-                    o
-                }
-                None => {
-                    crate::nhat_ky::ghi(
-                        "dich",
-                        format_args!("NGUYÊN VĂN (Google trả về khó hiểu) · {text:?}"),
-                    );
-                    text.to_string()
-                }
-            },
+            Ok(body) => parse_google(&body).unwrap_or_else(|| text.to_string()),
             Err(e) => {
                 eprintln!("[translate] Google lỗi (trả nguyên văn): {e}");
-                crate::nhat_ky::ghi("dich", format_args!("NGUYÊN VĂN (Google lỗi: {e}) · {text:?}"));
                 text.to_string()
             }
         }

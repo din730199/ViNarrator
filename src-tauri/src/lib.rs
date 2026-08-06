@@ -4,7 +4,6 @@ mod config;
 mod dedup;
 mod loopback;
 mod narrator;
-mod nhat_ky;
 mod ocr;
 mod oneocr;
 mod runtime;

@@ -38,7 +38,7 @@ use sherpa_onnx::{
 };
 
 use crate::runtime::{self, NO_WINDOW};
-use crate::{loopback, nhat_ky, speechmatics};
+use crate::{loopback, speechmatics};
 
 /// Model **chỉ tiếng Anh** `streaming-zipformer-en-2023-06-21` (encoder+joiner int8, decoder fp32).
 ///
@@ -413,9 +413,19 @@ impl Gom {
 
 /// Có chữ hoặc số nào không — không thì đừng đem đi dịch, và nhất là **đừng đem đi đọc**.
 ///
-/// Bộ gom từng nhả ra một câu chỉ gồm đúng một dấu chấm: [`chia_cau`] thấy `"."` là dấu kết hợp
-/// lệ nên cắt ra thành "câu", mà `Gom::them` lại không lọc như `Gom::xa` và [`chot`] vẫn lọc.
-/// Giọng neural cho đọc mỗi dấu câu thì nhả ra một tiếng nhiễu ngắn — nghe như loa bị rè.
+/// **Đo được trên máy thật, không phải phòng xa.** Nhật ký chẩn đoán bắt đúng chuỗi nhân quả:
+///
+/// ```text
+/// 20.03s  đỉnh 0.0000 · app đang đọc      <- loopback đã loại tiếng app -> số 0 TUYỆT ĐỐI
+/// 20.28s  Speechmatics trả về "."         <- máy chủ bịa dấu chấm từ chính quãng đó
+/// 29.67s  đẩy đi đọc: "."
+/// ```
+///
+/// Tức khi app đang nói, dòng gửi lên Speechmatics là chuỗi số 0 hoàn hảo — thứ không tồn tại
+/// ngoài đời (micro thật luôn có nền nhiễu) — và nó nhả ra dấu câu trơ trọi. [`chia_cau`] thấy
+/// `"."` là dấu kết hợp lệ nên cắt thành "câu", mà `Gom::them` lại không lọc trong khi
+/// `Gom::xa` và [`chot`] đều lọc — sót đúng một nhánh. Giọng neural cho đọc mỗi dấu câu thì
+/// nhả ra một tiếng nhiễu ngắn, nghe như loa rè.
 fn dang_ke(t: &str) -> bool {
     t.chars().any(char::is_alphanumeric)
 }
@@ -556,10 +566,6 @@ fn vet(rx: &Receiver<Vec<f32>>, buf: &mut Vec<f32>) -> f32 {
 const NGUONG_TIENG: f32 = 0.001;
 const IM_LAU: Duration = Duration::from_secs(20);
 
-/// Ghi một dòng biên độ vào nhật ký chẩn đoán mỗi ngần này. Đủ dày để đối chiếu với câu app đọc,
-/// đủ thưa để không phình file.
-const NHIP_GHI: Duration = Duration::from_secs(2);
-
 /// Ngóng xem có nghe thấy gì không.
 ///
 /// **Vì sao cần.** Nếu game xuất tiếng ở chế độ WASAPI độc quyền thì âm thanh đi thẳng xuống
@@ -642,9 +648,6 @@ fn nap(
 fn chot(rec: &OnlineRecognizer, st: &OnlineStream, may: &May, ra: &dyn Fn(String)) {
     let text = rec.get_result(st).map(|r| r.text).unwrap_or_default();
     let t = text.trim();
-    if !t.is_empty() {
-        nhat_ky::ghi("nghe", format_args!("(máy) {t:?}"));
-    }
     // Bỏ mẩu rác chỉ có dấu câu — endpoint chốt trên đoạn cực ngắn hay ra token vụn.
     if dang_ke(t) {
         let (cau, con) = chia_cau(&may.dau_cau(t));
@@ -781,7 +784,6 @@ impl Nao for MayNgoai {
                     self.gom.con_noi(gio);
                 }
                 for c in chu {
-                    nhat_ky::ghi("nghe", format_args!("(Speechmatics) {c:?}"));
                     self.gom.them(&c, gio, ra);
                 }
                 Ok(())
@@ -899,50 +901,21 @@ pub fn run(
     let mut cong = Cong::default();
     let mut ngong = Ngong::moi(Instant::now());
     let mut loi = None;
-    // Đối chiếu "app đang đọc gì" với "lúc đó có tiếng thật không" — xem `crate::nhat_ky`.
-    let mut nhip_ghi = Instant::now();
-    let mut dinh_ky = 0.0f32;
 
-    // Mỗi câu đẩy đi đều ghi lại, để biết khâu nào đẻ ra nó. Che luôn `ra` để không có đường
-    // nào lỡ đi vòng qua chỗ ghi này.
-    //
-    // Đây cũng là **chốt chặn cuối cho câu rác**: mọi câu từ cả hai bộ não đều đi qua đúng chỗ
-    // này, nên lọc ở đây là lọc được hết, kể cả nhánh nào đó thêm về sau mà quên lọc.
-    let ghi_ra = |s: String| {
-        if !dang_ke(&s) {
-            nhat_ky::ghi("bo", format_args!("câu rác {s:?}"));
-            return;
+    // **Chốt chặn cuối cho câu rác.** Mọi câu từ cả hai bộ não đều đi qua đúng chỗ này, nên lọc
+    // ở đây là lọc được hết — kể cả nhánh nào đó thêm về sau mà quên lọc.
+    let loc = |s: String| {
+        if dang_ke(&s) {
+            ra(s);
         }
-        nhat_ky::ghi("cau", format_args!("{s:?}"));
-        ra(s);
     };
-    let ra: &dyn Fn(String) = &ghi_ra;
-
-    nhat_ky::ghi(
-        "mo",
-        format_args!("nguồn={} {sr} Hz · bịt tai={bit_tai}", if engine == "speechmatics" {
-            "Speechmatics"
-        } else {
-            "máy"
-        }),
-    );
+    let ra: &dyn Fn(String) = &loc;
 
     while !stop.load(Ordering::Relaxed) {
         let dinh = vet(&rx, &mut buf);
         let gio = Instant::now();
         let dang_doc = tts_dang_doc.load(Ordering::Relaxed);
         ngong.nhip(dinh, dang_doc, gio, bao);
-        dinh_ky = dinh_ky.max(dinh);
-        if gio.duration_since(nhip_ghi) >= NHIP_GHI {
-            nhat_ky::ghi(
-                "tieng",
-                format_args!(
-                    "đỉnh {dinh_ky:.4}{}",
-                    if dang_doc { " · app đang đọc" } else { "" }
-                ),
-            );
-            (nhip_ghi, dinh_ky) = (gio, 0.0);
-        }
         // `bit_tai` sai (đường thường) -> cổng luôn mở, vì dòng tiếng đã không chứa tiếng của
         // app rồi. Chỉ máy phải lùi về cpal mới còn phải canh giờ.
         let tu_noi = bit_tai && dang_doc;
