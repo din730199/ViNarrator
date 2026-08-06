@@ -167,6 +167,66 @@ Confidence của OneOCR **không** dùng để lọc rác được: chữ nhỏ 
 (~0.99) trong khi tiếng Việt đọc đúng lại chỉ 0.72 — hai dải chồng nhau. Lọc theo chiều cao dòng
 mới là cái phân biệt được.
 
+## Lấy lời thoại từ đâu
+
+Chọn trong giao diện (**LẤY LỜI THOẠI TỪ**):
+
+| Nguồn | Cần gì | Hợp với |
+|---|---|---|
+| **Màn hình** (mặc định) | 0 MB, chọn vùng phụ đề | game có phụ đề rõ |
+| **Âm thanh** | tải 355 MB (chạy máy) hoặc API key (Speechmatics) | game không có phụ đề, hoặc phụ đề nằm ngoài vùng quét |
+
+Nguồn âm thanh có hai bộ não:
+
+| Nghe bằng | Cần gì | Đánh đổi |
+|---|---|---|
+| **Chạy trên máy** (mặc định) | tải 347 MB | miễn phí, không cần mạng, **không gửi gì ra ngoài** · nghe được Anh + Trung/Nhật/Hàn · ~11% một nhân |
+| **Speechmatics** | API key | nghe chuẩn hơn khi nhạc nền to, nhiều thứ tiếng, chữ trả về có sẵn dấu câu · **lời thoại được gửi lên máy chủ của họ** |
+
+Bản Speechmatics dùng WebSocket **đồng bộ** (`tungstenite`), không kéo tokio: khâu nghe vốn đã
+chạy trong thread riêng nên thêm cả một runtime async chỉ để phục vụ một socket là thừa.
+
+Nguồn âm thanh nghe **loopback** (mọi thứ đang phát ra loa) rồi nhận dạng tại chỗ bằng
+sherpa-onnx streaming zipformer EN 20M — offline, không key, không quota. Câu nghe được đi vào
+đúng đường dịch + đọc của nguồn màn hình.
+
+### Ba khâu nối tiếp, thiếu một là hỏng
+
+`nhận dạng → thêm dấu câu → gom → chẻ câu`. Bỏ khâu giữa thì bản chạy máy trả về **một mạch chữ
+không có dấu chấm nào**, không chẻ được gì, cả đoạn 40 từ bị ném đi dịch làm một — dịch ra tối
+nghĩa, TTS đọc liền chục giây, mà suốt chục giây đó cổng chặn đóng nên app **điếc hoàn toàn**.
+
+Bộ gom cũng không bỏ được: bộ nhận dạng chốt theo khoảng lặng 0,8s còn người nói thì ngập ngừng,
+nên thực tế bắt được `But` rồi `Me to get away from the information…` thành **hai mẩu rời**, và
+`I` rồi `Think it do it…`. Dịch riêng từng mẩu thì mẩu đầu ra "Nhưng" cụt lủn, mẩu sau mất chủ
+ngữ. Gom lại rồi mới cắt theo dấu câu thật là về đúng một câu.
+
+**Giá CPU: RTF 0,113 — khoảng 11% một nhân.** Đây là con số phải đo trước khi làm, vì khác OCR
+(chạy 16–73 ms mỗi 700 ms, có nghỉ), nhận dạng streaming phải nuốt 100% âm thanh liên tục.
+
+**App tự nghe chính nó.** ViNarrator phát tiếng Việt ra loa, loopback nghe cả tiếng đó. Không
+chặn thì nó nhận dạng giọng đọc của mình → dịch → đọc lại → lặp vô hạn. Nên có cổng chặn suốt
+lúc đang đọc, giữ thêm 300 ms cho thiết bị xả đệm.
+
+**Phải mồi im lặng trước khi nghe.** Zipformer khởi động với bộ đệm ngữ cảnh trái bằng 0 nên nuốt
+mất đoạn đầu — đo trên file mẫu chính thức:
+
+| | Nghe ra |
+|---|---|
+| không mồi | `The yellow lamps would light up…` |
+| mồi 1 giây | `After early nightfall the yellow lamps would light up…` |
+
+Sự thật là `AFTER EARLY NIGHTFALL THE YELLOW LAMPS…`, tức **mất trắng 2 giây đầu**. Đã loại trừ
+các nghi phạm khác trước khi kết luận: nạp nguyên khối một lần và tắt hẳn endpoint đều ra y hệt.
+
+Hai chỗ khác cũng phải chỉnh so với bản gốc: **phải xả** khi dừng (sherpa chỉ nhả câu ở mốc im
+lặng, tiếng dứt đột ngột thì chữ kẹt lại — file mẫu 6,6s ra **rỗng hoàn toàn**), và **nới
+`rule3` 6s → 12s** (nó cắt theo đồng hồ chứ không theo chỗ nghỉ nên rơi vào giữa từ:
+`…her a love` / `Ly child whose place…`, đem dịch thì ra rác).
+
+Cái giá của tính năng này: exe 13,6 → **31,6 MB**, installer 3,4 → **8,0 MB** (sherpa-onnx link
+tĩnh). Không cần cmake/libclang — thư viện native tải sẵn dạng prebuilt lúc build.
+
 ## Giọng đọc
 
 Chọn trong giao diện (**GIỌNG ĐỌC**):
@@ -298,13 +358,16 @@ qua (hàng đợi chỉ giữ 3).
 | `src-tauri/src/oneocr.rs` | OneOCR (Snipping Tool) + tự chép runtime | — (mới) |
 | `src-tauri/src/translate.rs` | Google Translate + LLM (OpenAI-compatible) | `translate.py` (deep-translator) |
 | `src-tauri/src/tts.rs` | chọn giọng + `Windows.Media.SpeechSynthesis` + `PlaySound` | `tts.py` (winsdk + winsound) |
+| `src-tauri/src/asr.rs` | nghe loopback, cổng chặn tiếng của chính app, gom + chẻ câu | — (mới) |
+| `src-tauri/src/speechmatics.rs` | nhận dạng qua Speechmatics (WebSocket đồng bộ) | — (mới) |
+| `src-tauri/src/stretch.rs` | đổi tốc độ đọc mà giữ cao độ (WSOLA) | — (mới) |
 | `src-tauri/src/runtime.rs` | tải file + tiến độ, đọc stderr worker, kiểm đĩa, chỉnh âm lượng | — (mới) |
 | `src-tauri/src/vieneu.rs` | giọng VieNeu + tự nuôi Python bằng `uv` | — (mới) |
 | `src-tauri/src/vieneu_worker.py` | worker Python, nhúng vào exe rồi ghi ra đĩa lúc cài | — (mới) |
 | `src-tauri/src/wave_out.rs` | phát liền mạch bằng hàng đợi đệm `waveOut` (cho VieNeu) | — (mới) |
 | `src-tauri/src/dedup.rs` | chống đọc trùng phụ đề cuộn | `dedup.py` |¹
 | `src-tauri/src/speech_queue.rs` | hàng đợi đọc (dedup + cap 3) | `speech_queue.py` |
-| `src-tauri/src/narrator.rs` | 2 thread: chụp→OCR→dedup, và dịch→đọc | `narrator.py` |
+| `src-tauri/src/narrator.rs` | chụp→OCR→dedup **hoặc** nghe→nhận dạng, rồi dịch→đọc | `narrator.py` |
 | `src-tauri/src/config.rs` | đọc/ghi config | `config.py` |
 | `src/App.tsx` | giao diện | `gui.py` |
 | `src/overlay/Overlay.tsx` | overlay kéo chọn vùng | `region_select.py` |

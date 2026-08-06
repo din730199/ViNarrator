@@ -1,3 +1,4 @@
+mod asr;
 mod capture;
 mod config;
 mod dedup;
@@ -6,6 +7,7 @@ mod ocr;
 mod oneocr;
 mod runtime;
 mod speech_queue;
+mod speechmatics;
 mod stretch;
 mod translate;
 mod tts;
@@ -103,26 +105,73 @@ fn set_tuning(
 /// engine: "windows" | "vieneu". Lần đầu chọn VieNeu phải cài ~560 MB — làm ở thread riêng và
 /// báo qua event, KHÔNG chặn command: chặn ở đây thì UI đơ suốt thời gian cài.
 /// Đổi config trước, cài sau: cài hỏng thì `tts.rs` tự lùi về giọng Windows.
-static DANG_CAI: AtomicBool = AtomicBool::new(false);
+static DANG_CAI_TTS: AtomicBool = AtomicBool::new(false);
+static DANG_CAI_ASR: AtomicBool = AtomicBool::new(false);
 
 /// Thả khoá kể cả khi luồng cài panic — khoá kẹt nghĩa là tới khi khởi động lại app mới cài
-/// lại được, mà lúc đó `ready()` vẫn false nên người dùng kẹt luôn ở giọng Windows.
-struct KhoaCai;
+/// lại được, mà lúc đó `ready()` vẫn false nên người dùng kẹt luôn ở lựa chọn cũ.
+struct KhoaCai(&'static AtomicBool);
 
 impl Drop for KhoaCai {
     fn drop(&mut self) {
-        DANG_CAI.store(false, Ordering::SeqCst);
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
-/// Xin quyền chạy luồng cài VieNeu. `None` = đã có luồng khác đang cài.
+/// Xin quyền chạy một luồng cài. `None` = đã có luồng khác đang cài đúng thứ đó.
 ///
 /// Không có khoá này thì bấm VieNeu → Windows → VieNeu lúc đang cài sẽ dựng luồng thứ hai
 /// (`ready()` vẫn false suốt quá trình cài): hai `uv pip install` cùng ghi vào một venv, hai
 /// lượt kéo 285 MB model vào cùng cache, và tệ nhất là `VieNeu::start_timeout` của luồng sau
 /// `remove_dir_all(out)` **xoá luôn thư mục mẩu tiếng** mà luồng trước đang dùng.
-fn xin_cai() -> Option<KhoaCai> {
-    (!DANG_CAI.swap(true, Ordering::SeqCst)).then_some(KhoaCai)
+///
+/// Hai cờ RIÊNG cho TTS và ASR: dùng chung một cờ thì đang tải model nghe mà bấm chọn VieNeu
+/// sẽ bị nuốt lặng lẽ.
+fn xin_cai(co: &'static AtomicBool) -> Option<KhoaCai> {
+    (!co.swap(true, Ordering::SeqCst)).then(|| KhoaCai(co))
+}
+
+/// source: "screen" | "audio". Lần đầu chọn "audio" phải tải model ~41 MB — tải ở thread riêng
+/// như VieNeu. Đổi config trước, tải sau: chưa tải xong thì `narrator` vẫn chạy đường OCR.
+#[tauri::command]
+fn set_source(app: AppHandle, n: tauri::State<Narrator>, source: String) -> Config {
+    n.set_source(source.clone());
+    if source != "audio" || asr::ready() {
+        return n.config();
+    }
+    let Some(khoa) = xin_cai(&DANG_CAI_ASR) else {
+        return n.config();
+    };
+    std::thread::spawn(move || {
+        let _khoa = khoa;
+        let bao = |s: String| {
+            let _ = app.emit("status", s);
+        };
+        bao("Đang tải model nghe tiếng Anh (~41 MB, chỉ lần đầu)…".into());
+        match asr::ensure_model(&bao) {
+            Ok(()) => bao("Đã tải xong — bật công tắc để bắt đầu nghe".into()),
+            Err(e) => {
+                let _ = app.emit(
+                    "warn",
+                    format!("Không tải được model nghe: {e} — tạm đọc phụ đề trên màn hình"),
+                );
+            }
+        }
+    });
+    n.config()
+}
+
+/// engine: "local" | "speechmatics". Key để trong config của user, không hardcode.
+#[tauri::command]
+fn set_asr(n: tauri::State<Narrator>, engine: String, key: String, language: String) -> Config {
+    n.set_asr(engine, key, language);
+    n.config()
+}
+
+/// Model nghe đã tải chưa — UI dùng để biết có phải báo "sẽ tải 41 MB" hay không.
+#[tauri::command]
+fn asr_ready() -> bool {
+    asr::ready()
 }
 
 #[tauri::command]
@@ -131,7 +180,7 @@ fn set_tts_engine(app: AppHandle, n: tauri::State<Narrator>, engine: String) -> 
     if engine != "vieneu" || vieneu::ready() {
         return n.config();
     }
-    let Some(khoa) = xin_cai() else {
+    let Some(khoa) = xin_cai(&DANG_CAI_TTS) else {
         return n.config();
     };
     std::thread::spawn(move || {
@@ -297,6 +346,9 @@ pub fn run() {
             set_engine,
             set_translate,
             set_tuning,
+            set_source,
+            asr_ready,
+            set_asr,
             set_tts_engine,
             engine_ready,
             vieneu_voices,
@@ -319,9 +371,13 @@ mod tests {
     /// thứ hai — xem `xin_cai`. Và cài xong phải thả khoá, nếu không sẽ không bao giờ cài lại.
     #[test]
     fn khong_cai_chong_hai_luong() {
-        let khoa = xin_cai().expect("luồng cài đầu tiên phải xin được khoá");
-        assert!(xin_cai().is_none(), "đang cài dở mà vẫn cho luồng thứ hai chạy");
+        let khoa = xin_cai(&DANG_CAI_TTS).expect("luồng cài đầu tiên phải xin được khoá");
+        assert!(xin_cai(&DANG_CAI_TTS).is_none(), "đang cài dở mà vẫn cho luồng thứ hai chạy");
+        // Khoá của TTS KHÔNG được chặn luồng tải model nghe — hai thứ khác nhau.
+        let k2 = xin_cai(&DANG_CAI_ASR).expect("khoá ASR bị khoá TTS chặn oan");
         drop(khoa);
-        assert!(xin_cai().is_some(), "cài xong không thả khoá — kẹt luôn ở giọng Windows");
+        drop(k2);
+        assert!(xin_cai(&DANG_CAI_TTS).is_some(), "cài xong không thả khoá — kẹt luôn ở lựa chọn cũ");
+        assert!(xin_cai(&DANG_CAI_ASR).is_some());
     }
 }

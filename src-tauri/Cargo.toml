@@ -34,6 +34,17 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
 ] }
 urlencoding = "2"
+# Nguồn "âm thanh": bắt loopback (thiết bị PHÁT mở ở chế độ input) rồi nhận dạng tại chỗ.
+# sherpa-onnx tự tải thư viện native prebuilt lúc build và link TĨNH — không cần cmake/libclang
+# (đúng thứ đã làm piper-rs build hỏng), đổi lại exe to thêm ~20 MB.
+cpal = "0.15"
+sherpa-onnx = "1.13"
+# Speechmatics: WebSocket bản ĐỒNG BỘ. Khâu nghe đã chạy trong thread riêng nên không cần
+# tokio — bản async sẽ kéo theo cả runtime chỉ để phục vụ một socket.
+tungstenite = { version = "0.24", default-features = false, features = [
+  "handshake",
+  "rustls-tls-webpki-roots",
+] }
 
 # Windows-only: OCR + TTS đều là WinRT nên app này chỉ chạy Windows (khai ở [dependencies] cho đúng).
 # Media_Core: cần cho SynthesizeTextToStreamAsync. Win32_Media_Audio: PlaySoundW (thay winsound).

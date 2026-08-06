@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Config, ENGINES, LLM_PRESETS, MODES, Spoken, TTS_ENGINES, Voice } from './types';
+import {
+  ASR_ENGINES,
+  ASR_LANGS,
+  Config,
+  ENGINES,
+  LLM_PRESETS,
+  MODES,
+  SOURCES,
+  Spoken,
+  TTS_ENGINES,
+  Voice,
+} from './types';
 
 const PURPLE = '#7c3aed';
 const RED = '#b91c1c';
@@ -37,6 +48,7 @@ export default function App() {
         setReady((x) => ({ ...x, vieneu: r })),
       );
       void invoke<string[]>('vieneu_voices').then(setVieneuVoices);
+      void invoke<boolean>('asr_ready').then((r) => setReady((x) => ({ ...x, audio: r })));
     };
     hoiReady();
     const un = [
@@ -96,6 +108,8 @@ export default function App() {
         </button>
       </div>
 
+      {/* Nghe tiếng thì không chụp màn hình -> vùng quét vô nghĩa, ẩn đi cho đỡ rối. */}
+      {cfg.source !== 'audio' && (
       <div style={{ ...pad, display: 'flex', gap: 8, marginTop: 8 }}>
         <button
           style={{ flex: 1, background: PURPLE }}
@@ -110,7 +124,9 @@ export default function App() {
           VÙNG LOẠI TRỪ
         </button>
       </div>
+      )}
 
+      {cfg.source !== 'audio' && (
       <div style={{ ...pad, fontSize: 12, color: '#9ca3af', marginTop: 6 }}>
         Vùng quét: {cfg.region.width}×{cfg.region.height} tại ({cfg.region.left},{cfg.region.top})
         {ex && (
@@ -126,6 +142,7 @@ export default function App() {
           </>
         )}
       </div>
+      )}
 
       {/* minHeight:0 + overflow => mở khối AI ra thì phần này tự cuộn, không đẩy log ra
           ngoài cửa sổ (flex item mặc định không co xuống dưới kích thước nội dung). */}
@@ -142,19 +159,110 @@ export default function App() {
           ))}
         </select>
 
-        <label>ENGINE OCR</label>
+        <label>LẤY LỜI THOẠI TỪ</label>
         <select
-          value={cfg.ocr_engine}
-          onChange={(e) =>
-            void invoke<Config>('set_engine', { engine: e.target.value }).then(setCfg)
-          }
+          value={cfg.source}
+          onChange={(e) => {
+            const source = e.target.value;
+            // Lần đầu chọn Âm thanh sẽ tải model ở nền — báo ngay để không tưởng app treo.
+            if (source === 'audio' && !ready.audio) setStatus('Đang tải model nghe…');
+            void invoke<Config>('set_source', { source }).then(setCfg);
+          }}
         >
-          {ENGINES.map((e) => (
-            <option key={e.value} value={e.value}>
-              {e.label}
+          {SOURCES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
             </option>
           ))}
         </select>
+        <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+          {SOURCES.find((s) => s.value === cfg.source)?.ghi_chu}
+          {cfg.source === 'audio' && (ready.audio ? ' · đã tải' : ' · SẼ TẢI khi chọn')}
+        </div>
+        {cfg.source === 'audio' && (
+          <>
+            <label>NGHE BẰNG</label>
+            <select
+              value={cfg.asr_engine}
+              onChange={(e) =>
+                void invoke<Config>('set_asr', {
+                  engine: e.target.value,
+                  key: cfg.speechmatics_key,
+                  language: cfg.asr_language,
+                }).then(setCfg)
+              }
+            >
+              {ASR_ENGINES.map((a) => (
+                <option key={a.value} value={a.value}>
+                  {a.label}
+                </option>
+              ))}
+            </select>
+            <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+              {ASR_ENGINES.find((a) => a.value === cfg.asr_engine)?.ghi_chu}
+              {cfg.asr_engine === 'local' && (ready.audio ? ' · đã tải' : ' · SẼ TẢI khi chọn')}
+            </div>
+
+            {cfg.asr_engine === 'speechmatics' ? (
+              <>
+                <label>API KEY SPEECHMATICS</label>
+                <input
+                  type="password"
+                  value={cfg.speechmatics_key}
+                  placeholder="lấy ở portal.speechmatics.com"
+                  onChange={(e) => setCfg({ ...cfg, speechmatics_key: e.target.value })}
+                  // Chỉ gửi khi rời ô: gửi theo từng phím sẽ dựng lại kết nối ở mỗi ký tự.
+                  onBlur={() =>
+                    void invoke<Config>('set_asr', {
+                      engine: cfg.asr_engine,
+                      key: cfg.speechmatics_key,
+                      language: cfg.asr_language,
+                    }).then(setCfg)
+                  }
+                />
+                <label>TIẾNG TRONG GAME</label>
+                <select
+                  value={cfg.asr_language}
+                  onChange={(e) =>
+                    void invoke<Config>('set_asr', {
+                      engine: cfg.asr_engine,
+                      key: cfg.speechmatics_key,
+                      language: e.target.value,
+                    }).then(setCfg)
+                  }
+                >
+                  {ASR_LANGS.map((l) => (
+                    <option key={l.value} value={l.value}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              // Model chạy máy chỉ biết tiếng Anh. Không cảnh báo thì người dùng chọn chế độ
+              // Trung rồi ngồi chờ mãi không thấy đọc gì mà app chẳng báo lỗi gì cả.
+              null
+            )}
+          </>
+        )}
+
+        {cfg.source !== 'audio' && (
+          <>
+            <label>ENGINE OCR</label>
+            <select
+              value={cfg.ocr_engine}
+              onChange={(e) =>
+                void invoke<Config>('set_engine', { engine: e.target.value }).then(setCfg)
+              }
+            >
+              {ENGINES.map((e) => (
+                <option key={e.value} value={e.value}>
+                  {e.label}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
 
         <label>CÁCH DỊCH</label>
         <select

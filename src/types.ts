@@ -9,6 +9,10 @@ export type Config = {
   min_line_len: number;
   fuzzy_threshold: number;
   mode: string;
+  source: string;
+  asr_engine: string;
+  speechmatics_key: string;
+  asr_language: string;
   ocr_engine: string;
   ocr_language: string;
   min_clean_ratio: number;
@@ -34,6 +38,44 @@ export type Spoken = { src: string; out: string };
 export const MODES: { value: string; label: string }[] = [
   { value: 'en', label: 'Đọc bản dịch (Anh→Việt)' },
   { value: 'zh', label: 'Đọc bản dịch (Trung→Việt)' },
+];
+
+// Lấy lời thoại từ đâu. Nghe tiếng đo được RTF 0,023 — khoảng 2,3% một nhân, chạy cùng game
+// thoải mái. Nhưng model chỉ biết tiếng Anh nên chế độ Trung→Việt phải dùng màn hình.
+export const SOURCES: { value: string; label: string; ghi_chu: string }[] = [
+  {
+    value: 'screen',
+    label: 'Màn hình — đọc phụ đề (OCR)',
+    ghi_chu: 'cần game có phụ đề và phải chọn đúng vùng · chính xác hơn khi phụ đề rõ',
+  },
+  {
+    value: 'audio',
+    label: 'Âm thanh — nghe thoại game',
+    ghi_chu: 'dùng khi game không có phụ đề · nhạc/tiếng nổ to sẽ nghe sai',
+  },
+];
+
+// Nghe bằng gì. Bản chạy máy đo được RTF 0,113; Speechmatics đẩy tiếng lên mạng nên CPU gần 0
+// nhưng lời thoại rời khỏi máy.
+export const ASR_ENGINES: { value: string; label: string; ghi_chu: string }[] = [
+  {
+    value: 'local',
+    label: 'Chạy trên máy — miễn phí',
+    ghi_chu: 'tải 347 MB · nghe được cả Anh lẫn Trung/Nhật · không gửi gì ra ngoài · ~11% một nhân',
+  },
+  {
+    value: 'speechmatics',
+    label: 'Speechmatics — cần API key',
+    ghi_chu: 'nghe chuẩn hơn khi nhạc nền to · nhiều thứ tiếng · LỜI THOẠI ĐƯỢC GỬI LÊN MÁY CHỦ HỌ',
+  },
+];
+
+// Mã ngôn ngữ Speechmatics. Bản chạy máy bỏ qua, luôn là tiếng Anh.
+export const ASR_LANGS: { value: string; label: string }[] = [
+  { value: 'en', label: 'Tiếng Anh' },
+  { value: 'zh', label: 'Tiếng Trung' },
+  { value: 'ja', label: 'Tiếng Nhật' },
+  { value: 'ko', label: 'Tiếng Hàn' },
 ];
 
 // Đo trên 6 mẫu khó: OneOCR 0.991 / Windows 0.625. Đổi lại OneOCR ~70ms/khung vs ~20ms

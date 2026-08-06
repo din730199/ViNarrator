@@ -91,6 +91,10 @@ pub struct TtsEngine {
     /// đến lúc có câu mới dựng thì người dùng câm 10s VÀ mất luôn 2-3 câu phụ đề trôi qua
     /// (hàng đợi chỉ giữ 3).
     prewarm: Arc<AtomicBool>,
+    /// Đang phát tiếng ra loa hay không. Nguồn ÂM THANH đọc cờ này để bịt tai lúc app đang
+    /// nói — loopback nghe cả tiếng của chính app, không chặn là nó nhận dạng giọng đọc của
+    /// mình rồi dịch rồi đọc lại, lặp vô hạn. Xem [`crate::asr`].
+    dang_doc: Arc<AtomicBool>,
 }
 
 impl TtsEngine {
@@ -102,14 +106,16 @@ impl TtsEngine {
             quit: Arc::new(AtomicBool::new(false)),
             interrupt: Arc::new(AtomicBool::new(false)),
             prewarm: Arc::new(AtomicBool::new(false)),
+            dang_doc: Arc::new(AtomicBool::new(false)),
         };
-        let (queue, params, wake, quit, interrupt, prewarm) = (
+        let (queue, params, wake, quit, interrupt, prewarm, dang_doc) = (
             engine.queue.clone(),
             engine.params.clone(),
             engine.wake.clone(),
             engine.quit.clone(),
             engine.interrupt.clone(),
             engine.prewarm.clone(),
+            engine.dang_doc.clone(),
         );
         std::thread::spawn(move || {
             ensure_com();
@@ -144,7 +150,13 @@ impl TtsEngine {
                 // được để nó làm câm luôn câu kế tiếp.
                 interrupt.store(false, Ordering::Relaxed);
                 let p = params.lock().unwrap().clone();
-                if let Err(e) = doc(&mut speaker, &mut vieneu, &p, &text, &interrupt) {
+                // Bật cờ TRƯỚC khi ra tiếng và chỉ tắt SAU khi phát xong — nguồn âm thanh dựa
+                // vào nó để bịt tai. Tắt sớm một nhịp là đủ để nó nghe thấy đuôi câu của
+                // chính app rồi dịch lại.
+                dang_doc.store(true, Ordering::Relaxed);
+                let ket = doc(&mut speaker, &mut vieneu, &p, &text, &interrupt);
+                dang_doc.store(false, Ordering::Relaxed);
+                if let Err(e) = ket {
                     eprintln!("[TTS] lỗi: {e}");
                     speaker = None; // engine hỏng -> dựng lại ở câu sau
                 }
@@ -200,6 +212,11 @@ impl TtsEngine {
     pub fn prewarm(&self) {
         self.prewarm.store(true, Ordering::Relaxed);
         self.notify();
+    }
+
+    /// Cờ "đang phát tiếng ra loa", cho nguồn âm thanh mượn để bịt tai — xem [`crate::asr`].
+    pub fn dang_doc(&self) -> Arc<AtomicBool> {
+        self.dang_doc.clone()
     }
 
     pub fn shutdown(&self) {

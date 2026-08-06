@@ -33,6 +33,19 @@ pub struct Config {
     /// "en" (Anh->Việt) | "zh" (Trung->Việt). Bản Rust chưa có OCR tiếng Việt nên bỏ "plain".
     pub mode: String,
 
+    /// Lấy lời thoại từ đâu: "screen" (OCR vùng phụ đề) | "audio" (nghe loopback rồi nhận
+    /// dạng tại chỗ). "audio" CHỈ nghe được tiếng Anh — chế độ zh vẫn phải dùng "screen".
+    /// Chưa tải model (~41 MB) thì tự chạy như "screen", không câm.
+    pub source: String,
+
+    /// Nghe bằng gì: "local" (model chạy máy, chỉ tiếng Anh, không cần mạng) |
+    /// "speechmatics" (đám mây, cần key, nhiều thứ tiếng, chữ trả về có sẵn dấu câu).
+    pub asr_engine: String,
+    /// Key Speechmatics — để trong config của user (`%APPDATA%`), KHÔNG hardcode.
+    pub speechmatics_key: String,
+    /// Mã ngôn ngữ Speechmatics ("en", "zh", "ja"…). Bản chạy máy bỏ qua field này.
+    pub asr_language: String,
+
     /// "oneocr" (mặc định, chính xác hơn — cần Win11 + Snipping Tool) | "windows"
     /// (Windows.Media.Ocr, nhẹ & nhanh hơn, chạy từ Win10).
     pub ocr_engine: String,
@@ -90,6 +103,13 @@ impl Default for Config {
             min_line_len: 3,
             fuzzy_threshold: 0.97,
             mode: "en".into(),
+            // Mặc định đọc màn hình: không phải tải gì, và phụ đề game thường chính xác hơn
+            // nhận dạng tiếng giữa nhạc nền + tiếng nổ.
+            source: "screen".into(),
+            // Mặc định chạy máy: không cần key, không gửi lời thoại đi đâu.
+            asr_engine: "local".into(),
+            speechmatics_key: String::new(),
+            asr_language: "en".into(),
             ocr_engine: "oneocr".into(),
             ocr_language: "en-US".into(),
             min_height_ratio: 0.6,
@@ -209,6 +229,9 @@ mod tests {
         // chuỗi rỗng rồi đọc câm (tts.rs so bằng == "vieneu" nên chuỗi lạ vẫn an toàn, nhưng
         // UI sẽ hiện dropdown trống).
         assert_eq!(c.tts_engine, "windows");
+        // Config có trước khi thêm nguồn âm thanh -> phải về "screen". Rơi vào chuỗi rỗng thì
+        // narrator không dựng OCR mà cũng không dựng ASR -> app chạy nhưng câm tịt.
+        assert_eq!(c.source, "screen");
     }
 
     #[test]

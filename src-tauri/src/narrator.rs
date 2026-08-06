@@ -22,6 +22,8 @@ struct Reload {
     ocr: AtomicBool,
     translate: AtomicBool,
     dedup: AtomicBool,
+    /// Cấu hình nghe đổi -> thả cái tai đang chạy để nó dựng lại với key/ngôn ngữ mới.
+    asr: AtomicBool,
 }
 
 impl Reload {
@@ -30,6 +32,7 @@ impl Reload {
             ocr: AtomicBool::new(true),
             translate: AtomicBool::new(true),
             dedup: AtomicBool::new(true),
+            asr: AtomicBool::new(false),
         }
     }
 }
@@ -116,6 +119,22 @@ impl Narrator {
         for f in [&self.reload.ocr, &self.reload.translate, &self.reload.dedup] {
             f.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// source: "screen" | "audio". Vòng lặp worker tự bật/tắt cái tai ở nhịp kế tiếp.
+    pub fn set_source(&self, source: String) {
+        self.edit(|c| c.source = source.clone());
+    }
+
+    /// Đổi cách nghe. Cái tai đang chạy phải dựng lại thì mới ăn cấu hình mới — hạ cờ
+    /// `running` một nhịp là vòng lặp worker tự thả `Tai` cũ rồi bật cái mới.
+    pub fn set_asr(&self, engine: String, key: String, language: String) {
+        self.edit(|c| {
+            c.asr_engine = engine.clone();
+            c.speechmatics_key = key.clone();
+            c.asr_language = language.clone();
+        });
+        self.reload.asr.store(true, Ordering::Relaxed);
     }
 
     pub fn set_engine(&self, engine: String) {
@@ -234,11 +253,43 @@ impl Worker {
             std::thread::spawn(move || translate_loop(app, tts, last_text, running, rx));
         }
 
+        // Nguồn âm thanh sống trong thread RIÊNG: `cpal::Stream` và stream của sherpa đều
+        // `!Send`, phải dựng và chết trong cùng một thread. Nó tự bơm câu vào đúng `tx` mà
+        // OCR đang dùng, nên khâu dịch + đọc không biết câu đến từ đâu.
+        let mut tai: Option<Tai> = None;
+
         loop {
             if self.quit.load(Ordering::Relaxed) {
+                tai.take();
                 return;
             }
             let cfg = self.cfg.lock().unwrap().clone();
+
+            // Bật/tắt cái tai theo nguồn đang chọn. Chưa tải model thì KHÔNG bật — rơi xuống
+            // đường OCR bên dưới để app vẫn nói được gì đó thay vì câm.
+            // Speechmatics chạy trên mạng nên KHÔNG cần model tải về; chỉ bản chạy máy mới cần.
+            let can_tai = cfg.source == "audio"
+                && self.running.load(Ordering::Relaxed)
+                && (cfg.asr_engine == "speechmatics" || crate::asr::ready());
+            // Đổi engine/key/ngôn ngữ giữa chừng -> thả cái tai cũ, nhánh dưới bật lại ngay.
+            if self.reload.asr.swap(false, Ordering::Relaxed) {
+                tai.take();
+            }
+            match (can_tai, tai.is_some()) {
+                (true, false) => {
+                    tai = Some(Tai::bat(&cfg, tx.clone(), self.tts.dang_doc(), self.app.clone()));
+                }
+                (false, true) => {
+                    tai.take();
+                    self.status("Đã tắt nghe tiếng game");
+                }
+                _ => {}
+            }
+            if tai.is_some() {
+                // Nguồn âm thanh không cần chụp màn hình, không cần OCR: ngủ rồi vòng lại.
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
 
             let redo_ocr = self.reload.ocr.swap(false, Ordering::Relaxed);
             let redo_translate = self.reload.translate.swap(false, Ordering::Relaxed);
@@ -305,6 +356,47 @@ impl Worker {
             let _ = tx.send(Msg::Line(line));
         }
         Ok(())
+    }
+}
+
+/// Cái tai: một thread chạy [`crate::asr::run`]. Thả `Tai` là ra hiệu dừng rồi CHỜ thread ra
+/// hẳn — phải chờ thật, vì `asr::run` còn chốt nốt câu dở trước khi thoát, và vì không chờ thì
+/// đổi nguồn qua lại nhanh sẽ có hai thread cùng giữ loopback.
+struct Tai {
+    stop: Arc<AtomicBool>,
+    tay: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Tai {
+    fn bat(cfg: &Config, tx: Sender<Msg>, dang_doc: Arc<AtomicBool>, app: AppHandle) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let s = stop.clone();
+        let (engine, key, ngon_ngu) = (
+            cfg.asr_engine.clone(),
+            cfg.speechmatics_key.clone(),
+            cfg.asr_language.clone(),
+        );
+        let tay = std::thread::spawn(move || {
+            let ra = |cau: String| {
+                let _ = tx.send(Msg::Line(cau));
+            };
+            let bao = |m: String| {
+                let _ = app.emit("status", m);
+            };
+            if let Err(e) = crate::asr::run(&engine, &key, &ngon_ngu, &s, &dang_doc, &ra, &bao) {
+                let _ = app.emit("warn", format!("Không nghe được tiếng game: {e}"));
+            }
+        });
+        Self { stop, tay: Some(tay) }
+    }
+}
+
+impl Drop for Tai {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.tay.take() {
+            let _ = t.join();
+        }
     }
 }
 
