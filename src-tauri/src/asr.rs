@@ -379,7 +379,7 @@ impl Gom {
     fn them(&mut self, t: &str, gio: Instant, ra: &dyn Fn(String)) {
         self.dem = noi(&self.dem, t);
         let (cau, con) = chia_cau(&self.dem);
-        for c in cau {
+        for c in cau.into_iter().filter(|c| dang_ke(c)) {
             ra(c);
         }
         self.dem = con;
@@ -405,10 +405,19 @@ impl Gom {
     fn xa(&mut self, ra: &dyn Fn(String)) {
         let t = std::mem::take(&mut self.dem);
         self.han = None;
-        if t.chars().any(char::is_alphanumeric) {
+        if dang_ke(&t) {
             ra(t);
         }
     }
+}
+
+/// Có chữ hoặc số nào không — không thì đừng đem đi dịch, và nhất là **đừng đem đi đọc**.
+///
+/// Bộ gom từng nhả ra một câu chỉ gồm đúng một dấu chấm: [`chia_cau`] thấy `"."` là dấu kết hợp
+/// lệ nên cắt ra thành "câu", mà `Gom::them` lại không lọc như `Gom::xa` và [`chot`] vẫn lọc.
+/// Giọng neural cho đọc mỗi dấu câu thì nhả ra một tiếng nhiễu ngắn — nghe như loa bị rè.
+fn dang_ke(t: &str) -> bool {
+    t.chars().any(char::is_alphanumeric)
 }
 
 /// Cổng chặn tiếng của CHÍNH APP.
@@ -637,12 +646,12 @@ fn chot(rec: &OnlineRecognizer, st: &OnlineStream, may: &May, ra: &dyn Fn(String
         nhat_ky::ghi("nghe", format_args!("(máy) {t:?}"));
     }
     // Bỏ mẩu rác chỉ có dấu câu — endpoint chốt trên đoạn cực ngắn hay ra token vụn.
-    if t.chars().any(char::is_alphanumeric) {
+    if dang_ke(t) {
         let (cau, con) = chia_cau(&may.dau_cau(t));
-        for c in cau {
+        for c in cau.into_iter().filter(|c| dang_ke(c)) {
             ra(c);
         }
-        if con.chars().any(char::is_alphanumeric) {
+        if dang_ke(&con) {
             ra(con);
         }
     }
@@ -896,7 +905,14 @@ pub fn run(
 
     // Mỗi câu đẩy đi đều ghi lại, để biết khâu nào đẻ ra nó. Che luôn `ra` để không có đường
     // nào lỡ đi vòng qua chỗ ghi này.
+    //
+    // Đây cũng là **chốt chặn cuối cho câu rác**: mọi câu từ cả hai bộ não đều đi qua đúng chỗ
+    // này, nên lọc ở đây là lọc được hết, kể cả nhánh nào đó thêm về sau mà quên lọc.
     let ghi_ra = |s: String| {
+        if !dang_ke(&s) {
+            nhat_ky::ghi("bo", format_args!("câu rác {s:?}"));
+            return;
+        }
         nhat_ky::ghi("cau", format_args!("{s:?}"));
         ra(s);
     };
@@ -1103,6 +1119,30 @@ mod tests {
         // Bộ gom RỖNG thì chữ tạm không được tự dựng hạn — chốt ra chuỗi rỗng chẳng để làm gì.
         g.con_noi(cuoi);
         assert!(g.han.is_none(), "bộ gom rỗng mà chữ tạm vẫn dựng hạn chốt");
+    }
+
+    /// **Chốt đúng cái thấy trên màn hình thật:** log hiện một dòng chỉ có mỗi dấu chấm. Nó đi
+    /// hết đường dịch rồi tới giọng đọc, mà giọng neural cho đọc mỗi dấu câu thì nhả ra tiếng
+    /// nhiễu ngắn — nghe như loa rè.
+    #[test]
+    fn khong_day_cau_rac_di_doc() {
+        let t0 = Instant::now();
+        let ra = std::cell::RefCell::new(Vec::<String>::new());
+        let f = |s: String| ra.borrow_mut().push(s);
+        let mut g = Gom::default();
+
+        // `chia_cau` coi "." là dấu kết hợp lệ nên cắt ra thành một "câu" rỗng nghĩa.
+        assert_eq!(chia_cau(". Run.").0, [".", "Run."], "tiền đề đổi thì test này hết ý nghĩa");
+        g.them(". Run.", t0, &f);
+        assert_eq!(*ra.borrow(), ["Run."], "dấu câu trơ trọi vẫn bị đẩy đi đọc");
+
+        // Đuôi bỏ lửng cũng vậy.
+        ra.borrow_mut().clear();
+        g.them("...", t0, &f);
+        g.nhip(t0 + IM_CHOT, &f);
+        assert!(ra.borrow().is_empty(), "đuôi toàn dấu chấm vẫn bị đẩy đi đọc");
+
+        assert!(!dang_ke("  «…»  ") && dang_ke("3.14") && dang_ke("Ừ"));
     }
 
     /// Báo im lặng phải đúng lúc: không lải nhải, không báo nhầm lúc app đang đọc, và tự rút
