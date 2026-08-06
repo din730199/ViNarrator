@@ -531,9 +531,58 @@ fn mo_loopback(tx: Sender<Vec<f32>>) -> Result<(cpal::Stream, u32), String> {
     Ok((st, sr))
 }
 
-fn vet(rx: &Receiver<Vec<f32>>, buf: &mut Vec<f32>) {
+/// Vét tiếng vừa bắt được vào `buf`, trả về **đỉnh biên độ của phần mới** — [`Ngong`] cần nó để
+/// biết có ai đang phát tiếng hay không.
+fn vet(rx: &Receiver<Vec<f32>>, buf: &mut Vec<f32>) -> f32 {
+    let mut dinh = 0.0f32;
     while let Ok(v) = rx.try_recv() {
+        dinh = dinh.max(v.iter().fold(0.0f32, |a, m| a.max(m.abs())));
         buf.extend_from_slice(&v);
+    }
+    dinh
+}
+
+/// Im lặng liên tục quá lâu thì nói cho người dùng biết. Dưới mức này coi như không có tiếng —
+/// loopback lúc không ai phát trả về đúng số 0, để ngưỡng thấp cho tiếng nền rất khẽ vẫn tính.
+const NGUONG_TIENG: f32 = 0.001;
+const IM_LAU: Duration = Duration::from_secs(20);
+
+/// Ngóng xem có nghe thấy gì không.
+///
+/// **Vì sao cần.** Nếu game xuất tiếng ở chế độ WASAPI độc quyền thì âm thanh đi thẳng xuống
+/// driver, không qua bộ trộn, nên loopback — cả đường loại trừ tiến trình lẫn cpal — đều không
+/// nghe thấy gì. Chọn sai thiết bị phát mặc định cũng ra y hệt. Không có chỗ này thì app hiện
+/// "Đang nghe tiếng game" rồi ngồi im vĩnh viễn, người dùng không có lấy một manh mối.
+///
+/// **Phải trừ lúc app đang đọc.** Loopback đã loại tiếng của chính app nên trong suốt lúc TTS
+/// nói, cái nghe được là số 0 thật — tính vào thì một đoạn thuyết minh dài sẽ bị báo nhầm.
+struct Ngong {
+    /// Lần cuối có tiếng (hoặc chính app đang nói).
+    moc: Instant,
+    /// Đã báo rồi thì đừng lải nhải mỗi nhịp.
+    dang_bao: bool,
+}
+
+impl Ngong {
+    fn moi(gio: Instant) -> Self {
+        Self { moc: gio, dang_bao: false }
+    }
+
+    fn nhip(&mut self, dinh: f32, app_dang_doc: bool, gio: Instant, bao: &dyn Fn(String)) {
+        if dinh > NGUONG_TIENG || app_dang_doc {
+            self.moc = gio;
+            if self.dang_bao {
+                self.dang_bao = false;
+                bao("Đã nghe thấy tiếng — nguồn âm thanh chạy bình thường.".into());
+            }
+        } else if !self.dang_bao && gio.duration_since(self.moc) >= IM_LAU {
+            self.dang_bao = true;
+            bao(format!(
+                "Chưa nghe thấy tiếng nào suốt {}s — kiểm tra thiết bị phát mặc định, \
+                 hoặc game đang xuất âm thanh ở chế độ độc quyền (WASAPI exclusive).",
+                IM_LAU.as_secs()
+            ));
+        }
     }
 }
 
@@ -831,14 +880,17 @@ pub fn run(
 
     let mut buf = Vec::<f32>::new();
     let mut cong = Cong::default();
+    let mut ngong = Ngong::moi(Instant::now());
     let mut loi = None;
 
     while !stop.load(Ordering::Relaxed) {
-        vet(&rx, &mut buf);
+        let dinh = vet(&rx, &mut buf);
         let gio = Instant::now();
+        let dang_doc = tts_dang_doc.load(Ordering::Relaxed);
+        ngong.nhip(dinh, dang_doc, gio, bao);
         // `bit_tai` sai (đường thường) -> cổng luôn mở, vì dòng tiếng đã không chứa tiếng của
         // app rồi. Chỉ máy phải lùi về cpal mới còn phải canh giờ.
-        let tu_noi = bit_tai && tts_dang_doc.load(Ordering::Relaxed);
+        let tu_noi = bit_tai && dang_doc;
         match cong.trang_thai(tu_noi, gio) {
             // Tiếng của chính app — KHÔNG được nhận dạng, nếu không thì nghe mình đọc rồi dịch
             // rồi đọc lại, lặp vô hạn. Mỗi bộ não xử lý quãng này một kiểu, xem `Nao::cam`.
@@ -1012,6 +1064,60 @@ mod tests {
         // Bộ gom RỖNG thì chữ tạm không được tự dựng hạn — chốt ra chuỗi rỗng chẳng để làm gì.
         g.con_noi(cuoi);
         assert!(g.han.is_none(), "bộ gom rỗng mà chữ tạm vẫn dựng hạn chốt");
+    }
+
+    /// Báo im lặng phải đúng lúc: không lải nhải, không báo nhầm lúc app đang đọc, và tự rút
+    /// lại khi tiếng quay về.
+    #[test]
+    fn bao_khi_im_lang_qua_lau() {
+        let t0 = Instant::now();
+        let ra = std::cell::RefCell::new(Vec::<String>::new());
+        let f = |s: String| ra.borrow_mut().push(s);
+        let mut n = Ngong::moi(t0);
+
+        // Chưa tới hạn thì im.
+        n.nhip(0.0, false, t0 + IM_LAU - Duration::from_millis(1), &f);
+        assert!(ra.borrow().is_empty(), "báo sớm hơn hạn");
+
+        n.nhip(0.0, false, t0 + IM_LAU, &f);
+        assert_eq!(ra.borrow().len(), 1, "tới hạn mà không báo");
+        assert!(ra.borrow()[0].contains("độc quyền"), "báo không nói cách xử lý");
+
+        // Đã báo rồi thì thôi, đừng bắn lại mỗi nhịp 5ms.
+        for i in 1..50 {
+            n.nhip(0.0, false, t0 + IM_LAU + Duration::from_millis(i * 5), &f);
+        }
+        assert_eq!(ra.borrow().len(), 1, "báo lải nhải");
+
+        // Tiếng quay lại -> rút lại lời báo.
+        let sau = t0 + IM_LAU * 2;
+        n.nhip(0.5, false, sau, &f);
+        assert_eq!(ra.borrow().len(), 2);
+        assert!(ra.borrow()[1].contains("Đã nghe thấy"), "không rút lại lời báo");
+    }
+
+    /// **Chốt đúng cái bẫy của đường bắt tiếng mới.** Loopback đã loại tiếng của chính app, nên
+    /// suốt lúc TTS đọc thì cái nghe được là số 0 THẬT. Tính vào là một đoạn thuyết minh dài
+    /// hơn 20 giây sẽ bị báo "không nghe thấy gì" trong khi mọi thứ vẫn chạy đúng.
+    #[test]
+    fn app_dang_doc_thi_khong_tinh_la_im_lang() {
+        let t0 = Instant::now();
+        let ra = std::cell::RefCell::new(Vec::<String>::new());
+        let f = |s: String| ra.borrow_mut().push(s);
+        let mut n = Ngong::moi(t0);
+
+        // Đọc liên tục gấp ba lần hạn, tiếng bắt được là 0 tuyệt đối.
+        for i in 1..=(IM_LAU.as_secs() * 3) {
+            n.nhip(0.0, true, t0 + Duration::from_secs(i), &f);
+        }
+        assert!(ra.borrow().is_empty(), "báo nhầm trong lúc app đang đọc");
+
+        // Đọc xong mà vẫn im thì mới tính, và tính TỪ LÚC đọc xong.
+        let xong = t0 + Duration::from_secs(IM_LAU.as_secs() * 3);
+        n.nhip(0.0, false, xong + IM_LAU - Duration::from_millis(1), &f);
+        assert!(ra.borrow().is_empty(), "tính hạn từ trước lúc đọc xong");
+        n.nhip(0.0, false, xong + IM_LAU, &f);
+        assert_eq!(ra.borrow().len(), 1);
     }
 
     /// Chẩn đoán: in vị trí (giây) và chữ THÔ tại mỗi mốc ngắt, không qua model dấu câu.
