@@ -335,7 +335,7 @@ impl VieNeu {
     pub fn speak(
         &mut self,
         text: &str,
-        volume: u8,
+        volume: u16,
         speed: f64,
         stop: &AtomicBool,
     ) -> Result<Doc, String> {
@@ -444,7 +444,7 @@ mod tests {
     use super::*;
 
     /// Âm lượng 0 = vẫn phát đủ độ dài nhưng im, để chạy test không ồn cả nhà.
-    const IM: u8 = 0;
+    const IM: u16 = 0;
 
     /// Cài từ trạng thái TRẮNG rồi đọc thật. Tốn mạng (~560 MB) và vài phút — chạy tay:
     ///     cargo test --lib vieneu -- --ignored --nocapture

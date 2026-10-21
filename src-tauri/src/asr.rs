@@ -737,45 +737,125 @@ struct MayNgoai {
     /// Giữ lại để nối lại khi đứt.
     key: String,
     ngon_ngu: String,
-    /// Còn được nối lại mấy lần nữa. Hết thì mới chịu thua — mạng chập chờn giữa lúc chơi là
-    /// chuyện thường, đứt một cái mà tắt luôn tính năng thì quá đỏng đảnh.
-    con_thu: u32,
+    lich: Lich,
 }
 
 /// Nối lại tối đa ngần này lần trong một phiên. RiTaiAI nối lại vô hạn (nó là trợ lý họp, chạy
 /// cả buổi); ở đây chặn lại để key sai hoặc hết hạn mức không thành vòng lặp gọi mạng vô tận.
 const THU_LAI: u32 = 5;
+/// Chờ bấy nhiêu trước lần nối lại đầu, mỗi lần đứt tiếp theo nhân đôi: 1-2-4-8-16s, tổng 31s
+/// cho trọn [`THU_LAI`] lượt.
+const CHO_DAU: Duration = Duration::from_secs(1);
 
-impl MayNgoai {
-    /// Đứt giữa chừng thì dựng lại phiên. Tiếng trong lúc đứt coi như mất — Speechmatics tính
-    /// giờ theo tiếng đã gửi, cố gửi bù đoạn cũ vừa tốn tiền vừa làm bản dịch lệch pha.
-    fn noi_lai(&mut self, vi: &str) -> Result<(), String> {
+#[derive(Debug, PartialEq, Eq)]
+enum Nhip {
+    /// Chưa tới giờ — nuốt tiếng, đừng gọi mạng.
+    Cho,
+    /// Tới giờ dựng lại phiên.
+    ToiGio,
+    /// Không có hẹn nào, chạy bình thường.
+    Thoi,
+}
+
+/// Lịch nối lại khi Speechmatics đứt: còn mấy lượt, lượt sau chờ bao lâu.
+///
+/// **Vì sao phải chờ.** Bản trước nối lại tức thì ngay trong nhịp đó, nên máy chủ sập hay rớt
+/// mạng là cả 5 lượt cháy sạch trong vài chục mili giây rồi tắt hẳn tính năng — người dùng chỉ
+/// kịp thấy một dòng lỗi, tưởng key hỏng. Giãn ra thì mạng chớp tắt vài giây là tự về.
+///
+/// **Vì sao không `sleep`.** Thread nghe còn phải nhìn cờ dừng; ngủ 16 giây là bấm DỪNG treo 16
+/// giây (`Tai::drop` chờ `join`). Nên đây là máy trạng thái thuần, nhận `gio` từ ngoài — cùng
+/// kiểu với [`Cua`] và [`Ngong`], và nhờ vậy test được mà không cần mở socket thật.
+struct Lich {
+    con_thu: u32,
+    doi: Duration,
+    cho_toi: Option<Instant>,
+}
+
+impl Lich {
+    fn moi() -> Self {
+        Self { con_thu: THU_LAI, doi: CHO_DAU, cho_toi: None }
+    }
+
+    /// Hẹn lượt nối lại kế tiếp, trả về khoảng vừa hẹn. `None` = hết lượt, chịu thua.
+    fn hen(&mut self, gio: Instant) -> Option<Duration> {
         if self.con_thu == 0 {
-            return Err(format!("{vi} — đã thử nối lại {THU_LAI} lần, chịu"));
+            return None;
         }
         self.con_thu -= 1;
-        eprintln!("[ASR] Speechmatics đứt ({vi}), đang nối lại…");
-        self.lo.clear();
-        self.phien = speechmatics::Phien::mo(&self.key, &self.ngon_ngu)
-            .map_err(|e| format!("nối lại Speechmatics không được: {e}"))?;
+        let d = self.doi;
+        self.cho_toi = Some(gio + d);
+        // KHÔNG hạ lại về `CHO_DAU` sau mỗi lần nối được: nối được không có nghĩa là dùng được —
+        // key hết hạn mức vẫn cho mở socket rồi mới đá ra, hạ lại thành ra vòng lặp gọi nhanh.
+        self.doi = d * 2;
+        Some(d)
+    }
+
+    fn nhip(&mut self, gio: Instant) -> Nhip {
+        match self.cho_toi {
+            None => Nhip::Thoi,
+            Some(t) if gio < t => Nhip::Cho,
+            Some(_) => {
+                self.cho_toi = None;
+                Nhip::ToiGio
+            }
+        }
+    }
+}
+
+impl MayNgoai {
+    /// Hẹn giờ dựng lại phiên. Tiếng trong lúc đứt coi như mất — Speechmatics tính giờ theo
+    /// tiếng đã gửi, cố gửi bù đoạn cũ vừa tốn tiền vừa làm bản dịch lệch pha.
+    fn hen_noi_lai(&mut self, vi: &str) -> Result<(), String> {
+        let Some(d) = self.lich.hen(Instant::now()) else {
+            return Err(format!("{vi} — đã thử nối lại {THU_LAI} lần, chịu"));
+        };
+        eprintln!("[ASR] Speechmatics đứt ({vi}), nối lại sau {d:?}…");
         Ok(())
+    }
+
+    /// `None` = không chờ gì cả, cứ nghe tiếp. `Some` = lượt này đã xử lý xong (đang chờ, hoặc
+    /// vừa nối lại, hoặc hết lượt thử).
+    fn cho(&mut self, buf: &mut Vec<f32>) -> Option<Result<(), String>> {
+        match self.lich.nhip(Instant::now()) {
+            Nhip::Thoi => None,
+            Nhip::Cho => {
+                buf.clear();
+                Some(Ok(()))
+            }
+            Nhip::ToiGio => {
+                buf.clear();
+                self.lo.clear();
+                Some(match speechmatics::Phien::mo(&self.key, &self.ngon_ngu) {
+                    Ok(p) => {
+                        eprintln!("[ASR] Speechmatics đã nối lại");
+                        self.phien = p;
+                        Ok(())
+                    }
+                    Err(e) => self.hen_noi_lai(&format!("mở lại không được: {e}")),
+                })
+            }
+        }
     }
 }
 
 impl Nao for MayNgoai {
     fn nghe(&mut self, buf: &mut Vec<f32>, sr: u32, ra: &dyn Fn(String)) -> Result<(), String> {
+        if let Some(r) = self.cho(buf) {
+            return r;
+        }
         self.lo.append(buf);
         // Một lô 250ms tính THEO TẦN SỐ THIẾT BỊ, vì hạ mẫu diễn ra lúc gửi.
         let can = (sr as usize) / 4;
         while self.lo.len() >= can {
             let m: Vec<f32> = self.lo.drain(..can).collect();
             if let Err(e) = self.phien.gui(speechmatics::ha_mau(&m, sr)) {
-                return self.noi_lai(&e);
+                return self.hen_noi_lai(&e);
             }
         }
         // Đẩy nốt phần còn kẹt trong đệm gửi từ nhịp trước.
         if let Err(e) = self.phien.day() {
-            return self.noi_lai(&e);
+            return self.hen_noi_lai(&e);
         }
         let gio = Instant::now();
         match self.phien.nhan() {
@@ -788,7 +868,7 @@ impl Nao for MayNgoai {
                 }
                 Ok(())
             }
-            Err(e) => self.noi_lai(&e),
+            Err(e) => self.hen_noi_lai(&e),
         }
     }
 
@@ -883,7 +963,7 @@ pub fn run(
             gom: Gom::default(),
             key: key.to_string(),
             ngon_ngu: ngon_ngu.to_string(),
-            con_thu: THU_LAI,
+            lich: Lich::moi(),
         })
     } else {
         let d = dir();
@@ -1215,6 +1295,30 @@ mod tests {
         assert_eq!(c.trang_thai(false, vua_xong), Cua::Dong, "nhả cổng quá sớm, đuôi tiếng lọt vào");
         assert_eq!(c.trang_thai(false, vua_xong + NHA_CONG), Cua::VuaMo);
         assert_eq!(c.trang_thai(false, vua_xong + NHA_CONG), Cua::Mo, "VuaMo báo quá một lần");
+    }
+
+    /// Khoảng chờ phải giãn gấp đôi rồi mới chịu thua, không được cháy hết lượt tức thì.
+    #[test]
+    fn lich_noi_lai_gian_dan_roi_moi_chiu_thua() {
+        let t0 = Instant::now();
+        let mut l = Lich::moi();
+        let cho: Vec<u64> =
+            (0..THU_LAI).filter_map(|_| l.hen(t0)).map(|d| d.as_secs()).collect();
+        assert_eq!(cho, vec![1, 2, 4, 8, 16]);
+        assert!(l.hen(t0).is_none(), "hết {THU_LAI} lượt mà vẫn hẹn tiếp");
+    }
+
+    /// **Đây là test bắt đúng lỗi cũ.** Bản trước nối lại ngay trong nhịp đó, tức `nhip` sẽ ra
+    /// `ToiGio` tại `t0` — chạy test này với code cũ là đỏ ở dòng `Cho`.
+    #[test]
+    fn dang_cho_thi_khong_goi_mang_som() {
+        let t0 = Instant::now();
+        let mut l = Lich::moi();
+        assert_eq!(l.nhip(t0), Nhip::Thoi, "chưa đứt mà đã đòi nối lại");
+        l.hen(t0);
+        assert_eq!(l.nhip(t0 + Duration::from_millis(999)), Nhip::Cho, "gọi mạng trước hạn");
+        assert_eq!(l.nhip(t0 + Duration::from_secs(1)), Nhip::ToiGio);
+        assert_eq!(l.nhip(t0 + Duration::from_secs(9)), Nhip::Thoi, "một lần đứt nối lại hai lần");
     }
 }
 

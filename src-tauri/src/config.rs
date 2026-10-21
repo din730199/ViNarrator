@@ -83,8 +83,10 @@ pub struct Config {
     pub voice_name: String,
     /// bội số 0.5..2.0
     pub speed: f64,
-    /// 0..100
-    pub volume: u8,
+    /// 0..300 phần trăm. Trên 100 là khuếch đại thật (có limiter), xem
+    /// [`crate::runtime::apply_gain`] — cần thiết vì giọng đọc chìm nghỉm bên cạnh tiếng game
+    /// vốn đã được nén tối đa.
+    pub volume: u16,
 }
 
 impl Default for Config {

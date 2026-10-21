@@ -459,11 +459,15 @@ export default function App() {
           )}
         </select>
 
-        <label>ÂM LƯỢNG &nbsp; {cfg.volume}%</label>
+        <label>
+          ÂM LƯỢNG &nbsp; {cfg.volume}%
+          {cfg.volume > 100 && <span style={{ color: PURPLE }}>&nbsp; · khuếch đại</span>}
+        </label>
         <input
           type="range"
           min={0}
-          max={100}
+          max={300}
+          step={5}
           value={cfg.volume}
           onChange={(e) => {
             const volume = Number(e.target.value);

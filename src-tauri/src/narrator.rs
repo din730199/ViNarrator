@@ -94,6 +94,32 @@ impl Narrator {
         self.running.load(Ordering::Relaxed)
     }
 
+    /// Kiểm những thứ hay hỏng nhất **trước** khi bật, đồng bộ, để báo ngay thay vì để worker
+    /// âm thầm rẽ sang đường khác.
+    ///
+    /// Ca thật đang có: chọn nguồn "nghe tiếng game" + bản chạy máy mà chưa tải model thì
+    /// `can_tai` ở [`Worker::run`] ra `false`, vòng lặp lặng lẽ rơi xuống nhánh chụp màn hình.
+    /// App vẫn đọc — đọc phụ đề trong vùng quét — nên người dùng không hề biết mình đang không
+    /// dùng cái mình vừa chọn, chỉ thấy "sao nó bắt sai hết vậy".
+    pub fn preflight(&self) -> Result<(), String> {
+        let c = self.cfg.lock().unwrap();
+        if c.source != "audio" {
+            return Ok(());
+        }
+        if c.asr_engine == "speechmatics" {
+            if c.speechmatics_key.trim().is_empty() {
+                return Err("Chưa có API key Speechmatics — điền key, hoặc đổi sang bản chạy máy."
+                    .into());
+            }
+            return Ok(());
+        }
+        if !crate::asr::ready() {
+            return Err("Chưa tải model nghe (~198 MB) — bấm Tải model, hoặc đổi sang Speechmatics."
+                .into());
+        }
+        Ok(())
+    }
+
     pub fn set_running(&self, on: bool) -> bool {
         self.running.store(on, Ordering::Relaxed);
         if !on {
@@ -198,7 +224,7 @@ impl Narrator {
         self.tts.set_params(None, None, Some(speed), None);
     }
 
-    pub fn set_volume(&self, volume: u8) {
+    pub fn set_volume(&self, volume: u16) {
         self.edit(|c| c.volume = volume);
         self.tts.set_params(None, None, None, Some(volume));
     }

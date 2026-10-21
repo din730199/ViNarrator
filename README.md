@@ -19,7 +19,8 @@ Kiến trúc bám theo RiTaiAI: logic nặng ở Rust (`src-tauri/src`), UI Reac
 ```powershell
 yarn install
 yarn dev      # cargo tauri dev
-yarn build    # cargo tauri build -> src-tauri/target/release/bundle/nsis/*-setup.exe
+yarn build    # cargo tauri build -> <target>/release/bundle/nsis/*-setup.exe
+              # <target> = %CARGO_TARGET_DIR% nếu đã set, mặc định src-tauri/target
 yarn test     # cargo test (52 unit test)
 ```
 

@@ -76,7 +76,9 @@ struct Params {
     engine: String,
     voice_name: String,
     speed: f64,
-    volume: u8,
+    /// Phần trăm, **vượt 100 được**: 100 = đúng mức model xuất ra, trên nữa là khuếch đại thật
+    /// qua [`crate::runtime::apply_gain`]. Không dùng `u8` vì trần là 300.
+    volume: u16,
 }
 
 pub struct TtsEngine {
@@ -98,7 +100,7 @@ pub struct TtsEngine {
 }
 
 impl TtsEngine {
-    pub fn new(engine: String, voice_name: String, speed: f64, volume: u8) -> Self {
+    pub fn new(engine: String, voice_name: String, speed: f64, volume: u16) -> Self {
         let engine = Self {
             queue: Arc::new(SpeechQueue::new(3)),
             params: Arc::new(Mutex::new(Params { engine, voice_name, speed, volume })),
@@ -190,7 +192,7 @@ impl TtsEngine {
         engine: Option<String>,
         voice_name: Option<String>,
         speed: Option<f64>,
-        volume: Option<u8>,
+        volume: Option<u16>,
     ) {
         let mut p = self.params.lock().unwrap();
         if let Some(e) = engine {
@@ -261,7 +263,10 @@ fn speaker_for<'a>(
     }
     let opts = s.synth.Options()?;
     opts.SetSpeakingRate(p.speed.clamp(0.5, 6.0))?;
-    opts.SetAudioVolume(f64::from(p.volume.min(100)) / 100.0)?;
+    // Để NGUYÊN 1.0 rồi tự chỉnh trên mẫu ở [`doc`]. `SetAudioVolume` kẹp trần đúng 1.0 nên
+    // không tăng được, mà để nó giảm thì hai engine đi hai đường âm lượng khác nhau — cùng một
+    // con số trên thanh trượt lại ra hai độ to.
+    opts.SetAudioVolume(1.0)?;
     Ok(&s.synth)
 }
 
@@ -291,7 +296,8 @@ fn doc(
         // Đổi sang giọng Windows -> thả worker Python, nó ăn tới ~1,3 GB RAM.
         *vieneu_cache = None;
     }
-    let wav = synthesize(speaker, p, text).map_err(|e| e.to_string())?;
+    let mut wav = synthesize(speaker, p, text).map_err(|e| e.to_string())?;
+    crate::runtime::apply_gain(&mut wav, p.volume);
     play_blocking(&wav);
     Ok(())
 }

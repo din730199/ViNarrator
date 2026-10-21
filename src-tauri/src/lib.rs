@@ -61,7 +61,7 @@ fn is_running(n: tauri::State<Narrator>) -> bool {
 
 #[tauri::command]
 fn toggle(app: AppHandle, n: tauri::State<Narrator>) -> bool {
-    emit_running(&app, n.toggle())
+    bat_tat(&app, &n)
 }
 
 #[tauri::command]
@@ -234,7 +234,7 @@ fn set_speed(n: tauri::State<Narrator>, speed: f64) {
 }
 
 #[tauri::command]
-fn set_volume(n: tauri::State<Narrator>, volume: u8) {
+fn set_volume(n: tauri::State<Narrator>, volume: u16) {
     n.set_volume(volume);
 }
 
@@ -293,6 +293,19 @@ fn emit_running(app: &AppHandle, on: bool) -> bool {
     on
 }
 
+/// Bật/tắt dùng chung cho nút trên UI **và** phím tắt Ctrl+Alt+S. Hai đường phải đi qua đúng
+/// một chỗ, nếu không thì [`Narrator::preflight`] chỉ chặn được một nửa số cách bật.
+fn bat_tat(app: &AppHandle, n: &Narrator) -> bool {
+    // Chỉ kiểm lúc BẬT — tắt thì không có gì để hỏng, và không được phép chặn.
+    if !n.running() {
+        if let Err(e) = n.preflight() {
+            let _ = app.emit("warn", e);
+            return emit_running(app, false);
+        }
+    }
+    emit_running(app, n.toggle())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -317,7 +330,7 @@ pub fn run() {
             let reread_key = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyR);
             if let Err(e) = gs.on_shortcut(toggle_key, |app, _, event| {
                 if event.state() == ShortcutState::Pressed {
-                    emit_running(app, app.state::<Narrator>().toggle());
+                    bat_tat(app, &app.state::<Narrator>());
                 }
             }) {
                 eprintln!("[hotkey] Ctrl+Alt+S không đăng ký được: {e}");
