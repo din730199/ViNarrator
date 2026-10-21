@@ -1,6 +1,6 @@
 [package]
 name = "vinarrator"
-version = "0.1.0"
+version = "0.1.1"
 description = "ViNarrator — thuyết minh game tiếng Việt"
 authors = ["ViNarrator"]
 edition = "2021"

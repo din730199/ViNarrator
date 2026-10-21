@@ -283,7 +283,7 @@ impl VieNeu {
             }
         });
 
-        let me = Self {
+        let mut me = Self {
             child,
             stdin,
             tin,
@@ -301,11 +301,23 @@ impl VieNeu {
                 Ok(Tin::Xong) => break,
                 Ok(Tin::Loi(e)) => return Err(format!("worker lỗi lúc khởi động: {e}")),
                 Ok(Tin::Chunk) => return Err("worker trả tin lạ lúc khởi động".into()),
-                Err(_) => {
+                Err(e) => {
+                    // Chết hẳn (kèm mã thoát: 0xC0000135 = thiếu VC++ runtime, 0xC000001D = CPU
+                    // thiếu lệnh...) khác với treo quá hạn — trước đây gộp chung nên không biết.
+                    let lydo = match e {
+                        mpsc::RecvTimeoutError::Timeout => format!("quá {}s không báo READY", cho.as_secs()),
+                        mpsc::RecvTimeoutError::Disconnected => {
+                            std::thread::sleep(Duration::from_millis(300));
+                            match me.child.try_wait() {
+                                Ok(Some(st)) => format!("tiến trình tự thoát ({st})"),
+                                _ => "mất kết nối với tiến trình".into(),
+                            }
+                        }
+                    };
                     return Err(runtime::kem_stderr(
-                        "worker VieNeu không khởi động được",
+                        &format!("worker VieNeu không khởi động được: {lydo}"),
                         &me.stderr_cuoi,
-                    ))
+                    ));
                 }
             }
         }
