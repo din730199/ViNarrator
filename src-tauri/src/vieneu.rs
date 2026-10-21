@@ -309,6 +309,11 @@ impl VieNeu {
                         mpsc::RecvTimeoutError::Disconnected => {
                             std::thread::sleep(Duration::from_millis(300));
                             match me.child.try_wait() {
+                                // 0xC0000005 lúc nạp onnxruntime = VC++ runtime của máy quá cũ (đã gặp
+                                // trên Win11 sạch); cài bản mới là hết.
+                                Ok(Some(st)) if st.to_string().to_lowercase().contains("c0000005") => format!(
+                                    "tiến trình tự thoát ({st}) — cài Microsoft Visual C++ Redistributable x64 mới nhất (https://aka.ms/vs/17/release/vc_redist.x64.exe) rồi bật lại"
+                                ),
                                 Ok(Some(st)) => format!("tiến trình tự thoát ({st})"),
                                 _ => "mất kết nối với tiến trình".into(),
                             }

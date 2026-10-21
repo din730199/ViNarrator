@@ -12,6 +12,8 @@ Kiến trúc bám theo RiTaiAI: logic nặng ở Rust (`src-tauri/src`), UI Reac
 - Giọng tiếng Việt offline của Windows (vd **Microsoft An**).
   Chưa có: Settings → Time & Language → Speech → Manage voices → Add → Vietnamese.
   (Hoặc bật giọng **VieNeu** trong app — không cần cài gì vào Windows, xem *Giọng đọc*.)
+- Giọng **VieNeu** cần Microsoft Visual C++ Redistributable x64 mới. Máy Win11 sạch có thể báo
+  `exit code: 0xc0000005` lúc cài — tải https://aka.ms/vs/17/release/vc_redist.x64.exe, cài rồi bật lại.
 - Để **build**: Rust 1.82+, `cargo-tauri`, Node 22+, Yarn.
 
 ## Chạy / build

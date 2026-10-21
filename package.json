@@ -1,6 +1,6 @@
 {
   "name": "vinarrator",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ViNarrator — thuyết minh game tiếng Việt (Tauri + React + Rust)",
   "private": true,
   "engines": {
