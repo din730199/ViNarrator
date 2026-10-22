@@ -1,6 +1,6 @@
 [package]
 name = "vinarrator"
-version = "0.1.2"
+version = "0.1.3"
 description = "ViNarrator — thuyết minh game tiếng Việt"
 authors = ["ViNarrator"]
 edition = "2021"
@@ -16,6 +16,9 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-global-shortcut = "2"
+# Tự cập nhật qua GitHub Releases (chữ ký minisign) + relaunch sau khi cài.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"

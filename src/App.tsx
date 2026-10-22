@@ -14,9 +14,8 @@ import {
   Voice,
 } from './types';
 
-const PURPLE = '#7c3aed';
-const RED = '#b91c1c';
-const GREEN = '#16a34a';
+const BLUE = '#0071E3';
+const ERR = '#D70015'; // lỗi: màu duy nhất ngoài bảng màu, vì lỗi phải nổi
 
 const pad = { padding: '0 18px' };
 
@@ -36,6 +35,9 @@ export default function App() {
   // model đổi danh sách thì UI tự đúng theo. Rỗng = chưa cài xong.
   const [vieneuVoices, setVieneuVoices] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
+  // Phiên bản mới (nếu có) và cờ đang tải/cài.
+  const [update, setUpdate] = useState('');
+  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     // Lỗi command phải HIỆN LÊN — nuốt lặng thì UI kẹt ở "Đang tải…" không rõ vì sao.
@@ -73,6 +75,33 @@ export default function App() {
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
   }, [log]);
 
+  // Tự kiểm tra bản mới lúc mở app. Im lặng khi offline / chưa có bản phát hành nào: lỗi ở đây
+  // không đáng làm phiền người đang chơi game.
+  useEffect(() => {
+    void import('@tauri-apps/plugin-updater')
+      .then(({ check }) => check())
+      .then((u) => u && setUpdate(u.version))
+      .catch(() => {});
+  }, []);
+
+  // Chỉ tải + cài khi người dùng bấm — không tự cài ngầm lúc đang chơi. check() lại để lấy
+  // handle Update thay vì cất object vào state.
+  const doUpdate = async () => {
+    setUpdating(true);
+    try {
+      const { check } = await import('@tauri-apps/plugin-updater');
+      const u = await check();
+      if (u) {
+        await u.downloadAndInstall();
+        const { relaunch } = await import('@tauri-apps/plugin-process');
+        await relaunch();
+      }
+    } catch (e) {
+      setUpdating(false);
+      setErr(`Cập nhật lỗi: ${String(e)}`);
+    }
+  };
+
   if (!cfg) return <div style={{ padding: 18 }}>{err || 'Đang tải…'}</div>;
 
   const ex = cfg.exclude_region;
@@ -99,9 +128,30 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+      {update && (
+        // Thanh nổi kiểu nav của Apple: trắng mờ + blur, viền mảnh.
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            padding: '8px 18px',
+            background: 'rgba(255,255,255,0.8)',
+            backdropFilter: 'saturate(180%) blur(20px)',
+            borderBottom: '1px solid rgba(0,0,0,0.1)',
+          }}
+        >
+          <span>Có bản mới {update}</span>
+          <button className="small" disabled={updating} onClick={() => void doUpdate()}>
+            {updating ? 'Đang cập nhật…' : 'Cập nhật'}
+          </button>
+        </div>
+      )}
       <div style={{ ...pad, paddingTop: 16 }}>
         <button
-          style={{ width: '100%', height: 46, fontSize: 15, background: running ? RED : GREEN }}
+          className={running ? 'dark' : ''}
+          style={{ width: '100%' }}
           onClick={() => void invoke<boolean>('toggle').then(setRunning)}
         >
           {running ? '⏸  DỪNG ĐỌC' : '▶  BẮT ĐẦU ĐỌC'}
@@ -112,13 +162,15 @@ export default function App() {
       {cfg.source !== 'audio' && (
       <div style={{ ...pad, display: 'flex', gap: 8, marginTop: 8 }}>
         <button
-          style={{ flex: 1, background: PURPLE }}
+          className="secondary"
+          style={{ flex: 1 }}
           onClick={() => void invoke('pick_region', { kind: 'scan' })}
         >
           SỬA VÙNG QUÉT
         </button>
         <button
-          style={{ flex: 1, background: RED }}
+          className="secondary"
+          style={{ flex: 1 }}
           onClick={() => void invoke('pick_region', { kind: 'exclude' })}
         >
           VÙNG LOẠI TRỪ
@@ -127,14 +179,14 @@ export default function App() {
       )}
 
       {cfg.source !== 'audio' && (
-      <div style={{ ...pad, fontSize: 12, color: '#9ca3af', marginTop: 6 }}>
+      <div style={{ ...pad, fontSize: 12, color: '#6e6e73', marginTop: 6 }}>
         Vùng quét: {cfg.region.width}×{cfg.region.height} tại ({cfg.region.left},{cfg.region.top})
         {ex && (
           <>
             {' · loại trừ '}
             {ex.width}×{ex.height}{' '}
             <button
-              style={{ background: '#374151', padding: '1px 6px', fontSize: 11 }}
+              className="ghost small"
               onClick={() => void invoke<Config>('clear_exclude').then(setCfg)}
             >
               xoá
@@ -175,7 +227,7 @@ export default function App() {
             </option>
           ))}
         </select>
-        <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+        <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
           {SOURCES.find((s) => s.value === cfg.source)?.ghi_chu}
           {cfg.source === 'audio' && (ready.audio ? ' · đã tải' : ' · SẼ TẢI khi chọn')}
         </div>
@@ -198,7 +250,7 @@ export default function App() {
                 </option>
               ))}
             </select>
-            <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+            <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
               {ASR_ENGINES.find((a) => a.value === cfg.asr_engine)?.ghi_chu}
               {cfg.asr_engine === 'local' && (ready.audio ? ' · đã tải' : ' · SẼ TẢI khi chọn')}
             </div>
@@ -274,7 +326,7 @@ export default function App() {
         </select>
 
         {cfg.translate_engine === 'llm' && (
-          <div style={{ borderLeft: `2px solid ${PURPLE}`, paddingLeft: 10, marginTop: 6 }}>
+          <div style={{ borderLeft: `2px solid ${BLUE}`, paddingLeft: 10, marginTop: 6 }}>
             <label>NHÀ CUNG CẤP</label>
             <select
               value={preset?.name ?? 'custom'}
@@ -290,7 +342,7 @@ export default function App() {
               ))}
               {!preset && <option value="custom">Tự nhập</option>}
             </select>
-            <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+            <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
               {preset?.free ?? 'base URL tự nhập (API kiểu OpenAI)'}
             </div>
 
@@ -334,14 +386,14 @@ export default function App() {
               onMouseUp={() => save(cfg)}
               onKeyUp={() => save(cfg)}
             />
-            <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
+            <div style={{ fontSize: 12, color: '#6e6e73', marginBottom: 4 }}>
               Gửi kèm câu trước giúp AI chọn xưng hô nhất quán, đổi lại tốn token và chậm hơn.
             </div>
           </div>
         )}
 
         <details style={{ marginTop: 12 }}>
-          <summary style={{ cursor: 'pointer', fontSize: 12, color: '#cbd5e1' }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12, color: '#1d1d1f' }}>
             TINH CHỈNH BẮT CHỮ
           </summary>
 
@@ -382,7 +434,7 @@ export default function App() {
             onMouseUp={() => saveTuning(cfg)}
             onKeyUp={() => saveTuning(cfg)}
           />
-          <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+          <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
             Nâng lên nếu còn nghe đọc chữ bịa; hạ xuống nếu câu thật bị bỏ oan.
           </div>
 
@@ -397,7 +449,7 @@ export default function App() {
             onMouseUp={() => saveTuning(cfg)}
             onKeyUp={() => saveTuning(cfg)}
           />
-          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
+          <div style={{ fontSize: 12, color: '#6e6e73', marginBottom: 4 }}>
             Hai dòng giống nhau tới mức này thì bỏ dòng sau. Hạ xuống sẽ nuốt mất câu thoại chỉ
             khác một từ — đo được 0.82 nuốt 8/8 cặp như vậy.
           </div>
@@ -420,7 +472,7 @@ export default function App() {
             </option>
           ))}
         </select>
-        <div style={{ fontSize: 11, color: '#9ca3af', margin: '2px 0 6px' }}>
+        <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
           {TTS_ENGINES.find((e) => e.value === cfg.tts_engine)?.ghi_chu}
           {cfg.tts_engine !== 'windows' &&
             (ready[cfg.tts_engine] ? ' · đã cài' : ' · SẼ CÀI khi đọc câu đầu')}
@@ -461,7 +513,7 @@ export default function App() {
 
         <label>
           ÂM LƯỢNG &nbsp; {cfg.volume}%
-          {cfg.volume > 100 && <span style={{ color: PURPLE }}>&nbsp; · khuếch đại</span>}
+          {cfg.volume > 100 && <span style={{ color: BLUE }}>&nbsp; · khuếch đại</span>}
         </label>
         <input
           type="range"
@@ -492,12 +544,12 @@ export default function App() {
       </div>
 
       <div
-        style={{ ...pad, color: err ? '#f87171' : '#9ca3af', fontSize: 12, margin: '14px 0 4px' }}
+        style={{ ...pad, color: err ? ERR : '#6e6e73', fontSize: 12, margin: '14px 0 4px' }}
       >
         {err || status || 'Ctrl+Alt+S bật/tắt · Ctrl+Alt+R đọc lại'}
       </div>
       {warn && (
-        <div style={{ ...pad, color: '#fbbf24', fontSize: 12, marginBottom: 4 }}>⚠ {warn}</div>
+        <div style={{ ...pad, color: '#1d1d1f', fontSize: 12, marginBottom: 4 }}>⚠ {warn}</div>
       )}
       <div
         ref={logRef}
@@ -507,8 +559,9 @@ export default function App() {
           overflowY: 'auto',
           margin: '0 18px 16px',
           padding: 8,
-          background: '#111',
-          borderRadius: 6,
+          background: '#fff',
+          border: '1px solid #ededf2',
+          borderRadius: 0,
           whiteSpace: 'pre-wrap',
         }}
       >
@@ -516,7 +569,7 @@ export default function App() {
           <div key={i} style={{ marginBottom: 6 }}>
             {/* bản gốc mờ ở trên: nghe sai thì nhìn là biết lỗi ở OCR hay ở khâu dịch */}
             {l.src !== l.out && (
-              <div style={{ color: '#6b7280', fontSize: 11 }}>{l.src}</div>
+              <div style={{ color: '#6e6e73', fontSize: 12 }}>{l.src}</div>
             )}
             <div>{l.out}</div>
           </div>

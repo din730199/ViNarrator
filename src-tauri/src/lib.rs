@@ -310,6 +310,8 @@ fn bat_tat(app: &AppHandle, n: &Narrator) -> bool {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let handle = app.handle().clone();
             app.manage(Narrator::new(handle.clone(), config::load()));
