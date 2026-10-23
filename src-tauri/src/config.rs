@@ -87,6 +87,10 @@ pub struct Config {
     /// [`crate::runtime::apply_gain`] — cần thiết vì giọng đọc chìm nghỉm bên cạnh tiếng game
     /// vốn đã được nén tối đa.
     pub volume: u16,
+    /// Phụ đề nổi trong game: cửa sổ trong suốt luôn nằm trên cùng.
+    pub captions: bool,
+    /// false = chuột xuyên qua (không cản việc chơi game); true = kéo được để dời vị trí.
+    pub captions_movable: bool,
 }
 
 impl Default for Config {
@@ -131,6 +135,8 @@ impl Default for Config {
             voice_name: "Microsoft An".into(),
             speed: 1.0,
             volume: 100,
+            captions: false,
+            captions_movable: false,
         }
     }
 }

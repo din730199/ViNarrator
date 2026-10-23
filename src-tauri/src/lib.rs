@@ -238,6 +238,36 @@ fn set_volume(n: tauri::State<Narrator>, volume: u16) {
     n.set_volume(volume);
 }
 
+/// Bật/tắt cửa sổ phụ đề nổi. Không focus để khỏi giật game ra khỏi tiền cảnh; mặc định chuột
+/// xuyên qua, chỉ `movable` mới bắt chuột để kéo.
+fn apply_captions(app: &AppHandle, on: bool, movable: bool) {
+    let Some(w) = app.get_webview_window("captions") else { return };
+    if !on {
+        let _ = w.hide();
+        return;
+    }
+    // Vị trí chỉ đặt lúc mới hiện: giữa đáy màn hình chính, nơi phụ đề phim vẫn nằm.
+    // shortcut: chưa nhớ vị trí người dùng đã kéo, mở lại là về chỗ cũ — lưu vào Config nếu cần.
+    if !w.is_visible().unwrap_or(false) {
+        if let (Ok(Some(m)), Ok(sz)) = (app.primary_monitor(), w.outer_size()) {
+            let x = m.position().x + (m.size().width as i32 - sz.width as i32) / 2;
+            let y = m.position().y + m.size().height as i32 - sz.height as i32 - (m.scale_factor() * 70.0) as i32;
+            let _ = w.set_position(PhysicalPosition::new(x, y));
+        }
+        let _ = w.show();
+    }
+    let _ = w.set_always_on_top(true);
+    let _ = w.set_ignore_cursor_events(!movable);
+}
+
+#[tauri::command]
+fn set_captions(app: AppHandle, n: tauri::State<Narrator>, on: bool, movable: bool) {
+    n.set_captions(on, movable);
+    apply_captions(&app, on, movable);
+    // Cửa sổ phụ đề đổi viền (nét đứt) theo cờ này.
+    let _ = app.emit("captions_state", movable);
+}
+
 /// Mở overlay kéo chọn vùng. kind: "scan" (vùng quét) | "exclude" (vùng loại trừ).
 #[tauri::command]
 fn pick_region(app: AppHandle, kind: String) -> Result<(), String> {
@@ -324,6 +354,9 @@ pub fn run() {
                 tauri::WebviewWindowBuilder::from_config(app.handle(), wc)?.build()?;
             }
 
+            let c = app.state::<Narrator>().config();
+            apply_captions(app.handle(), c.captions, c.captions_movable);
+
             // Hotkey toàn cục như bản headless: Ctrl+Alt+S bật/tắt, Ctrl+Alt+R đọc lại.
             // Đăng ký RIÊNG từng phím: gộp một lần thì một phím bị app khác chiếm sẽ làm hỏng cả hai.
             // Lỗi KHÔNG chặn app — vẫn dùng được nút trên UI.
@@ -371,6 +404,7 @@ pub fn run() {
             set_voice,
             set_speed,
             set_volume,
+            set_captions,
             pick_region,
             region_picked,
             clear_exclude

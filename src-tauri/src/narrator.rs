@@ -229,6 +229,13 @@ impl Narrator {
         self.tts.set_params(None, None, None, Some(volume));
     }
 
+    pub fn set_captions(&self, on: bool, movable: bool) {
+        self.edit(|c| {
+            c.captions = on;
+            c.captions_movable = movable;
+        });
+    }
+
     pub fn set_region(&self, region: Region) {
         self.edit(|c| c.region = region);
     }

@@ -28,6 +28,8 @@ export type Config = {
   voice_name: string;
   speed: number;
   volume: number;
+  captions: boolean;
+  captions_movable: boolean;
 };
 
 export type Voice = { label: string; id: string };

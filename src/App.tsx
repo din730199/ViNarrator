@@ -14,8 +14,7 @@ import {
   Voice,
 } from './types';
 
-const BLUE = '#0071E3';
-const ERR = '#D70015'; // lỗi: màu duy nhất ngoài bảng màu, vì lỗi phải nổi
+const ERR = '#ff7a70'; // lỗi/cảnh báo: san hô, tách hẳn với hổ phách (= đang đọc)
 
 const pad = { padding: '0 18px' };
 
@@ -126,22 +125,15 @@ export default function App() {
       fuzzyThreshold: c.fuzzy_threshold,
     }).then(setCfg);
 
+  const setCaptions = (on: boolean, movable: boolean) => {
+    setCfg({ ...cfg, captions: on, captions_movable: movable });
+    void invoke('set_captions', { on, movable });
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       {update && (
-        // Thanh nổi kiểu nav của Apple: trắng mờ + blur, viền mảnh.
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            padding: '8px 18px',
-            background: 'rgba(255,255,255,0.8)',
-            backdropFilter: 'saturate(180%) blur(20px)',
-            borderBottom: '1px solid rgba(0,0,0,0.1)',
-          }}
-        >
+        <div className="updatebar">
           <span>Có bản mới {update}</span>
           <button className="small" disabled={updating} onClick={() => void doUpdate()}>
             {updating ? 'Đang cập nhật…' : 'Cập nhật'}
@@ -150,11 +142,12 @@ export default function App() {
       )}
       <div style={{ ...pad, paddingTop: 16 }}>
         <button
-          className={running ? 'dark' : ''}
+          className={running ? 'primary live' : 'primary'}
           style={{ width: '100%' }}
           onClick={() => void invoke<boolean>('toggle').then(setRunning)}
         >
-          {running ? '⏸  DỪNG ĐỌC' : '▶  BẮT ĐẦU ĐỌC'}
+          {running && <span className="dot" />}
+          {running ? 'Dừng đọc' : 'Bắt đầu đọc'}
         </button>
       </div>
 
@@ -166,20 +159,20 @@ export default function App() {
           style={{ flex: 1 }}
           onClick={() => void invoke('pick_region', { kind: 'scan' })}
         >
-          SỬA VÙNG QUÉT
+          Sửa vùng quét
         </button>
         <button
           className="secondary"
           style={{ flex: 1 }}
           onClick={() => void invoke('pick_region', { kind: 'exclude' })}
         >
-          VÙNG LOẠI TRỪ
+          Vùng loại trừ
         </button>
       </div>
       )}
 
       {cfg.source !== 'audio' && (
-      <div style={{ ...pad, fontSize: 12, color: '#6e6e73', marginTop: 6 }}>
+      <div style={{ ...pad, fontSize: 12, color: '#8a8f9a', marginTop: 6 }}>
         Vùng quét: {cfg.region.width}×{cfg.region.height} tại ({cfg.region.left},{cfg.region.top})
         {ex && (
           <>
@@ -196,10 +189,37 @@ export default function App() {
       </div>
       )}
 
+      <div style={{ ...pad, marginTop: 10 }}>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={cfg.captions}
+            onChange={(e) => setCaptions(e.target.checked, cfg.captions_movable)}
+          />
+          Hiện phụ đề nổi trong game
+        </label>
+        {cfg.captions && (
+          <>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={cfg.captions_movable}
+                onChange={(e) => setCaptions(cfg.captions, e.target.checked)}
+              />
+              Cho phép kéo để dời vị trí
+            </label>
+            <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 0' }}>
+              Tắt mục kéo khi đã đặt xong để chuột xuyên qua vào game. Game cần chạy chế độ cửa sổ
+              hoặc toàn màn hình không viền, toàn màn hình độc quyền sẽ che mất phụ đề.
+            </div>
+          </>
+        )}
+      </div>
+
       {/* minHeight:0 + overflow => mở khối AI ra thì phần này tự cuộn, không đẩy log ra
           ngoài cửa sổ (flex item mặc định không co xuống dưới kích thước nội dung). */}
       <div style={{ ...pad, overflowY: 'auto', minHeight: 0 }}>
-        <label>CHẾ ĐỘ</label>
+        <label>Chế độ</label>
         <select
           value={cfg.mode}
           onChange={(e) => void invoke<Config>('set_mode', { mode: e.target.value }).then(setCfg)}
@@ -211,7 +231,7 @@ export default function App() {
           ))}
         </select>
 
-        <label>LẤY LỜI THOẠI TỪ</label>
+        <label>Lấy lời thoại từ</label>
         <select
           value={cfg.source}
           onChange={(e) => {
@@ -227,13 +247,13 @@ export default function App() {
             </option>
           ))}
         </select>
-        <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
+        <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 6px' }}>
           {SOURCES.find((s) => s.value === cfg.source)?.ghi_chu}
           {cfg.source === 'audio' && (ready.audio ? ' · đã tải' : ' · SẼ TẢI khi chọn')}
         </div>
         {cfg.source === 'audio' && (
           <>
-            <label>NGHE BẰNG</label>
+            <label>Nghe bằng</label>
             <select
               value={cfg.asr_engine}
               onChange={(e) =>
@@ -250,14 +270,14 @@ export default function App() {
                 </option>
               ))}
             </select>
-            <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
+            <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 6px' }}>
               {ASR_ENGINES.find((a) => a.value === cfg.asr_engine)?.ghi_chu}
               {cfg.asr_engine === 'local' && (ready.audio ? ' · đã tải' : ' · SẼ TẢI khi chọn')}
             </div>
 
             {cfg.asr_engine === 'speechmatics' ? (
               <>
-                <label>API KEY SPEECHMATICS</label>
+                <label>API key Speechmatics</label>
                 <input
                   type="password"
                   value={cfg.speechmatics_key}
@@ -272,7 +292,7 @@ export default function App() {
                     }).then(setCfg)
                   }
                 />
-                <label>TIẾNG TRONG GAME</label>
+                <label>Tiếng trong game</label>
                 <select
                   value={cfg.asr_language}
                   onChange={(e) =>
@@ -300,7 +320,7 @@ export default function App() {
 
         {cfg.source !== 'audio' && (
           <>
-            <label>ENGINE OCR</label>
+            <label>Engine OCR</label>
             <select
               value={cfg.ocr_engine}
               onChange={(e) =>
@@ -316,7 +336,9 @@ export default function App() {
           </>
         )}
 
-        <label>CÁCH DỊCH</label>
+        <hr className="sep" />
+
+        <label>Cách dịch</label>
         <select
           value={cfg.translate_engine}
           onChange={(e) => save({ ...cfg, translate_engine: e.target.value })}
@@ -326,8 +348,8 @@ export default function App() {
         </select>
 
         {cfg.translate_engine === 'llm' && (
-          <div style={{ borderLeft: `2px solid ${BLUE}`, paddingLeft: 10, marginTop: 6 }}>
-            <label>NHÀ CUNG CẤP</label>
+          <div style={{ borderLeft: '1px solid #2a2e36', paddingLeft: 10, marginTop: 6 }}>
+            <label>Nhà cung cấp</label>
             <select
               value={preset?.name ?? 'custom'}
               onChange={(e) => {
@@ -342,11 +364,11 @@ export default function App() {
               ))}
               {!preset && <option value="custom">Tự nhập</option>}
             </select>
-            <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
+            <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 6px' }}>
               {preset?.free ?? 'base URL tự nhập (API kiểu OpenAI)'}
             </div>
 
-            <label>API KEY</label>
+            <label>API key</label>
             <input
               type="password"
               placeholder="dán key vào đây"
@@ -355,7 +377,7 @@ export default function App() {
               onBlur={() => save(cfg)}
             />
 
-            <label>MODEL</label>
+            <label>Model</label>
             <input
               type="text"
               value={cfg.llm_model}
@@ -363,7 +385,7 @@ export default function App() {
               onBlur={() => save(cfg)}
             />
 
-            <label>BASE URL</label>
+            <label>Base URL</label>
             <input
               type="text"
               value={cfg.llm_base_url}
@@ -372,7 +394,7 @@ export default function App() {
             />
 
             <label>
-              NGỮ CẢNH &nbsp;
+              Ngữ cảnh &nbsp;
               {cfg.llm_context_lines === 0
                 ? 'tắt — dịch từng câu rời'
                 : `${cfg.llm_context_lines} câu trước`}
@@ -386,18 +408,18 @@ export default function App() {
               onMouseUp={() => save(cfg)}
               onKeyUp={() => save(cfg)}
             />
-            <div style={{ fontSize: 12, color: '#6e6e73', marginBottom: 4 }}>
+            <div style={{ fontSize: 12, color: '#8a8f9a', marginBottom: 4 }}>
               Gửi kèm câu trước giúp AI chọn xưng hô nhất quán, đổi lại tốn token và chậm hơn.
             </div>
           </div>
         )}
 
         <details style={{ marginTop: 12 }}>
-          <summary style={{ cursor: 'pointer', fontSize: 12, color: '#1d1d1f' }}>
-            TINH CHỈNH BẮT CHỮ
+          <summary>
+            Tinh chỉnh bắt chữ
           </summary>
 
-          <label>NHỊP QUÉT &nbsp; {cfg.interval_ms} ms</label>
+          <label>Nhịp quét &nbsp; {cfg.interval_ms} ms</label>
           <input
             type="range"
             min={300}
@@ -409,7 +431,7 @@ export default function App() {
             onKeyUp={() => saveTuning(cfg)}
           />
 
-          <label>ĐỘ DÀI DÒNG TỐI THIỂU &nbsp; {cfg.min_line_len} ký tự</label>
+          <label>Độ dài dòng tối thiểu &nbsp; {cfg.min_line_len} ký tự</label>
           <input
             type="range"
             min={1}
@@ -421,7 +443,7 @@ export default function App() {
           />
 
           <label>
-            LỌC CHỮ RÁC &nbsp;
+            Lọc chữ rác &nbsp;
             {cfg.min_clean_ratio === 0 ? 'tắt' : cfg.min_clean_ratio.toFixed(2)}
           </label>
           <input
@@ -434,11 +456,11 @@ export default function App() {
             onMouseUp={() => saveTuning(cfg)}
             onKeyUp={() => saveTuning(cfg)}
           />
-          <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
+          <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 6px' }}>
             Nâng lên nếu còn nghe đọc chữ bịa; hạ xuống nếu câu thật bị bỏ oan.
           </div>
 
-          <label>CHỐNG ĐỌC TRÙNG &nbsp; {cfg.fuzzy_threshold.toFixed(2)}</label>
+          <label>Chống đọc trùng &nbsp; {cfg.fuzzy_threshold.toFixed(2)}</label>
           <input
             type="range"
             min={0.5}
@@ -449,13 +471,15 @@ export default function App() {
             onMouseUp={() => saveTuning(cfg)}
             onKeyUp={() => saveTuning(cfg)}
           />
-          <div style={{ fontSize: 12, color: '#6e6e73', marginBottom: 4 }}>
+          <div style={{ fontSize: 12, color: '#8a8f9a', marginBottom: 4 }}>
             Hai dòng giống nhau tới mức này thì bỏ dòng sau. Hạ xuống sẽ nuốt mất câu thoại chỉ
             khác một từ — đo được 0.82 nuốt 8/8 cặp như vậy.
           </div>
         </details>
 
-        <label>GIỌNG ĐỌC</label>
+        <hr className="sep" />
+
+        <label>Giọng đọc</label>
         <select
           value={cfg.tts_engine}
           onChange={(e) => {
@@ -472,7 +496,7 @@ export default function App() {
             </option>
           ))}
         </select>
-        <div style={{ fontSize: 12, color: '#6e6e73', margin: '2px 0 6px' }}>
+        <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 6px' }}>
           {TTS_ENGINES.find((e) => e.value === cfg.tts_engine)?.ghi_chu}
           {cfg.tts_engine !== 'windows' &&
             (ready[cfg.tts_engine] ? ' · đã cài' : ' · SẼ CÀI khi đọc câu đầu')}
@@ -512,8 +536,8 @@ export default function App() {
         </select>
 
         <label>
-          ÂM LƯỢNG &nbsp; {cfg.volume}%
-          {cfg.volume > 100 && <span style={{ color: BLUE }}>&nbsp; · khuếch đại</span>}
+          Âm lượng &nbsp; {cfg.volume}%
+          {cfg.volume > 100 && <span style={{ color: '#ecebe6' }}>&nbsp; · khuếch đại</span>}
         </label>
         <input
           type="range"
@@ -528,7 +552,7 @@ export default function App() {
           }}
         />
 
-        <label>TỐC ĐỘ &nbsp; {cfg.speed.toFixed(1)}x</label>
+        <label>Tốc độ &nbsp; {cfg.speed.toFixed(1)}x</label>
         <input
           type="range"
           min={0.5}
@@ -544,34 +568,22 @@ export default function App() {
       </div>
 
       <div
-        style={{ ...pad, color: err ? ERR : '#6e6e73', fontSize: 12, margin: '14px 0 4px' }}
+        style={{ ...pad, color: err ? ERR : '#8a8f9a', fontSize: 12, margin: '14px 0 4px' }}
       >
         {err || status || 'Ctrl+Alt+S bật/tắt · Ctrl+Alt+R đọc lại'}
       </div>
       {warn && (
-        <div style={{ ...pad, color: '#1d1d1f', fontSize: 12, marginBottom: 4 }}>⚠ {warn}</div>
+        <div style={{ ...pad, color: ERR, fontSize: 12, marginBottom: 4 }}>⚠ {warn}</div>
       )}
-      <div
-        ref={logRef}
-        style={{
-          flex: 1,
-          minHeight: 90,
-          overflowY: 'auto',
-          margin: '0 18px 16px',
-          padding: 8,
-          background: '#fff',
-          border: '1px solid #ededf2',
-          borderRadius: 0,
-          whiteSpace: 'pre-wrap',
-        }}
-      >
+      <div ref={logRef} className="stage">
+        {log.length === 0 && (
+          <div className="empty">Lời thoại sẽ hiện ở đây khi bạn bắt đầu đọc.</div>
+        )}
         {log.map((l, i) => (
-          <div key={i} style={{ marginBottom: 6 }}>
+          <div key={i} className="cue">
             {/* bản gốc mờ ở trên: nghe sai thì nhìn là biết lỗi ở OCR hay ở khâu dịch */}
-            {l.src !== l.out && (
-              <div style={{ color: '#6e6e73', fontSize: 12 }}>{l.src}</div>
-            )}
-            <div>{l.out}</div>
+            {l.src !== l.out && <div className="src">{l.src}</div>}
+            <div className="out">{l.out}</div>
           </div>
         ))}
       </div>

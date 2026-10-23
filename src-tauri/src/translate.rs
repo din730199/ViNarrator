@@ -76,7 +76,22 @@ impl Translator {
         if !self.enabled || text.trim().is_empty() {
             return text.to_string();
         }
-        let out = self.via_llm(text).unwrap_or_else(|| self.via_google(text));
+        let out = match self.via_llm(text).or_else(|| self.via_google(text)) {
+            Some(o) => {
+                // Google chạy lại được -> xoá cảnh báo "dịch lỗi". Khi LLM đang bật thì notice
+                // là của LLM (đã tự quản lý), không đè lên.
+                if self.llm.is_none() {
+                    self.set_notice(String::new());
+                }
+                o
+            }
+            // Hỏng hết: vẫn trả nguyên văn để không nuốt câu, nhưng PHẢI báo — trước đây im lặng
+            // nên người dùng chỉ thấy app đọc tiếng Anh bằng giọng Việt mà không biết vì sao.
+            None => {
+                self.set_notice("Dịch lỗi (không gọi được Google Dịch) — đang đọc nguyên văn".into());
+                text.to_string()
+            }
+        };
         self.remember(text);
         out
     }
@@ -158,26 +173,54 @@ impl Translator {
             self.set_notice("AI trả lời dài bất thường — câu này dùng Google Dịch".into());
             return None;
         }
+        // Model hay trả lại nguyên câu tiếng Anh (nhất là câu ngắn, hoặc khi nó tưởng là "chữ
+        // rác OCR") — đó là lỗi, không phải bản dịch. Bỏ để Google dịch thay.
+        if out.trim().eq_ignore_ascii_case(text.trim()) && text.chars().any(char::is_alphabetic) {
+            return None;
+        }
         self.set_notice(String::new());
         Some(out)
     }
 
-    fn via_google(&self, text: &str) -> String {
+    /// Google gtx là endpoint không chính thức: thỉnh thoảng 429 / rớt mạng. Thử lại tối đa 3
+    /// lần (nghỉ ngắn) trước khi bỏ cuộc; timeout thì không thử lại vì sẽ làm giọng trễ thêm.
+    fn via_google(&self, text: &str) -> Option<String> {
+        for lan in 0..3 {
+            if lan > 0 {
+                std::thread::sleep(Duration::from_millis(300 * lan));
+            }
+            match self.google_once(text) {
+                Ok(out) => return Some(out),
+                Err(retry) => {
+                    if !retry {
+                        break;
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Err(true) = đáng thử lại, Err(false) = bỏ luôn.
+    fn google_once(&self, text: &str) -> Result<String, bool> {
         let url = format!(
             "https://translate.googleapis.com/translate_a/single?client=gtx&sl={}&tl={}&dt=t&q={}",
             self.source,
             self.target,
             urlencoding::encode(text)
         );
-        // Hai nhánh hỏng đều trả về NGUYÊN VĂN — tức app đọc thẳng tiếng Anh bằng giọng tiếng
-        // Việt, nghe ra thì lạ tai chứ không giống lỗi. Cố ý: thà lạ tai còn hơn nuốt mất câu.
-        match self.client.get(&url).send().and_then(|r| r.text()) {
-            Ok(body) => parse_google(&body).unwrap_or_else(|| text.to_string()),
-            Err(e) => {
-                eprintln!("[translate] Google lỗi (trả nguyên văn): {e}");
-                text.to_string()
-            }
+        let res = self.client.get(&url).send().map_err(|e| {
+            eprintln!("[translate] Google lỗi: {e}");
+            !e.is_timeout()
+        })?;
+        if !res.status().is_success() {
+            eprintln!("[translate] Google trả {}", res.status());
+            return Err(true);
         }
+        let body = res.text().map_err(|_| true)?;
+        // Body không phải JSON dịch (trang chặn / captcha) cũng tính là hỏng chứ không phải
+        // "dịch ra rỗng".
+        parse_google(&body).ok_or(true)
     }
 }
 
@@ -425,6 +468,14 @@ mod tests {
         // Server đã tắt: nếu vẫn gọi thì lỗi "connection refused"; None ở đây chứng minh
         // cooldown chặn TRƯỚC khi gửi request.
         assert!(t.via_llm("Hi").is_none());
+    }
+
+    #[test]
+    fn llm_tra_lai_nguyen_cau_tieng_anh_thi_bo() {
+        let (base, h) = fake_server("200 OK", r#"{"choices":[{"message":{"content":"kneel."}}]}"#);
+        let mut t = Translator::new(&llm_cfg(base, 0));
+        assert!(t.via_llm("Kneel.").is_none());
+        h.join().unwrap();
     }
 
     #[test]

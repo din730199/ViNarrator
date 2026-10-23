@@ -4,13 +4,15 @@
   "description": "enables the default permissions",
   "windows": [
     "main",
-    "overlay"
+    "overlay",
+    "captions"
   ],
   "permissions": [
     "core:default",
     "core:event:default",
     "global-shortcut:default",
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "core:window:allow-start-dragging"
   ]
 }

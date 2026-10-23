@@ -12,6 +12,7 @@ export default defineConfig({
       input: {
         index: resolve(__dirname, 'index.html'),
         overlay: resolve(__dirname, 'overlay.html'),
+        captions: resolve(__dirname, 'captions.html'),
       },
     },
   },

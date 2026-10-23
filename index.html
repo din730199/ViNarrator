@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
     <title>ViNarrator — Thuyết minh game</title>
@@ -8,90 +8,190 @@
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     />
     <style>
-      /* Theo www.apple.com-DESIGN.md: nền trắng, một màu nhấn #0071E3, nút bo tròn cao 44px,
-         ô nhập bo 8px, khung vuông viền #EDEDF2. Chữ SF Pro; Windows không có thì rơi về Segoe UI. */
+      /* Giao diện tối. Đơn sắc (than + ngà); hổ phách là màu phụ đề phim và CHỈ dành cho thứ đang
+         diễn ra: nút khi đang đọc + dòng thoại mới nhất. Lỗi dùng san hô, tách hẳn với hổ phách. */
       :root {
-        --blue: #0071e3;
-        --blue-hover: #006edb;
-        --blue-press: #0076df;
-        --text: #1d1d1f;
-        --text-2: #333336;
-        --text-3: #6e6e73;
-        --surface: #ededf2;
-        --line: #d5d5d7;
+        color-scheme: dark;
+        --bg: #101114;
+        --raised: #17191e;
+        --stage: #0b0c0e;
+        --line: #2a2e36;
+        --line-2: #3a3f4a;
+        --text: #ecebe6;
+        --text-2: #b9b8b2;
+        --text-3: #8a8f9a;
+        --live: #f4b942;
+        --err: #ff7a70;
       }
+      * { box-sizing: border-box; }
       body {
         margin: 0;
-        background: #fff;
+        background: var(--bg);
         color: var(--text);
-        font: 14px/20px 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text',
-          'Segoe UI', Roboto, sans-serif;
+        font: 14px/20px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
         -webkit-font-smoothing: antialiased;
       }
+
       button {
-        height: 44px;
-        padding: 0 24px;
-        border: none;
-        border-radius: 980px;
-        background: var(--blue);
-        color: #fff;
-        font: inherit;
-        cursor: pointer;
-        transition: background 0.15s;
-      }
-      button:hover { background: var(--blue-hover); }
-      button:active { background: var(--blue-press); }
-      button:disabled { opacity: 0.5; cursor: default; }
-      button.secondary {
+        height: 40px;
+        padding: 0 20px;
+        border: 1px solid var(--line-2);
+        border-radius: 999px;
         background: transparent;
-        color: var(--blue);
-        box-shadow: inset 0 0 0 2px var(--blue);
+        color: var(--text);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s, color 0.15s;
       }
-      button.secondary:hover { background: rgba(0, 113, 227, 0.05); box-shadow: inset 0 0 0 2px var(--blue-hover); }
-      button.dark { background: var(--text); }
-      button.dark:hover { background: var(--text-2); }
-      button.ghost { background: transparent; color: var(--text); border-radius: 8px; padding: 0 8px; }
-      button.ghost:hover { background: rgba(0, 0, 0, 0.05); }
-      button.ghost:active { background: rgba(0, 0, 0, 0.08); }
+      button:hover { background: rgba(255, 255, 255, 0.06); border-color: var(--text-3); }
+      button:active { background: rgba(255, 255, 255, 0.1); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      button.primary {
+        height: 48px;
+        border-color: transparent;
+        background: var(--text);
+        color: var(--bg);
+        font-size: 15px;
+      }
+      button.primary:hover { background: #fff; }
+      button.primary.live { background: var(--live); color: #1a1304; }
+      button.primary.live:hover { background: #ffc85a; }
+      button.ghost { border-color: transparent; border-radius: 8px; padding: 0 8px; color: var(--text-2); }
       button.small { height: 28px; padding: 0 12px; font-size: 12px; }
+      .updatebar button.small { border-color: transparent; background: var(--text); color: var(--bg); }
+      .updatebar button.small:hover { background: #fff; }
+
+      /* Chấm nhấp nháy: chuyển động duy nhất, báo app đang nghe/đọc. */
+      .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 10px;
+        border-radius: 50%;
+        background: #1a1304;
+        vertical-align: 1px;
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes pulse { 50% { opacity: 0.25; } }
+      @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+
       select, input[type='text'], input[type='password'] {
         width: 100%;
         height: 40px;
-        box-sizing: border-box;
-        background: #fff;
+        background: var(--raised);
         color: var(--text);
         border: 1px solid var(--line);
-        border-radius: 8px;
+        border-radius: 10px;
         padding: 0 12px;
         font: inherit;
         outline: none;
+        transition: border-color 0.15s, box-shadow 0.15s;
       }
       select {
         appearance: none;
         cursor: pointer;
-        padding-right: 32px;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%236e6e73' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E");
+        padding-right: 34px;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%238a8f9a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E");
         background-repeat: no-repeat;
         background-position: right 12px center;
       }
-      select:disabled { color: var(--text-3); background-color: #f5f5f7; cursor: default; }
-      select:focus, input[type='text']:focus, input[type='password']:focus {
-        border-color: var(--blue);
-        box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.1);
+      select:hover, input[type='text']:hover, input[type='password']:hover { border-color: var(--line-2); }
+      select:disabled { color: var(--text-3); cursor: default; }
+      select:focus-visible, input[type='text']:focus, input[type='password']:focus {
+        border-color: var(--text-3);
+        box-shadow: 0 0 0 3px rgba(236, 235, 230, 0.12);
       }
+      button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
       input::placeholder { color: var(--text-3); }
-      input[type='range'] { width: 100%; accent-color: var(--blue); }
+      option { background: var(--raised); color: var(--text); }
+      input[type='range'] { width: 100%; accent-color: var(--text); }
+
       label {
         display: block;
         margin: 16px 0 6px;
         font-size: 12px;
         line-height: 16px;
         font-weight: 600;
-        color: var(--text);
+        color: var(--text-2);
       }
-      summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text); }
-      ::-webkit-scrollbar { width: 10px; }
-      ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.2); border-radius: 5px; border: 2px solid #fff; }
+      summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-2); padding: 4px 0; }
+      summary:hover { color: var(--text); }
+      label.check {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 8px 0;
+        font-size: 14px;
+        font-weight: 400;
+        color: var(--text);
+        cursor: pointer;
+      }
+      input[type='checkbox'] {
+        appearance: none;
+        flex: none;
+        position: relative;
+        width: 36px;
+        height: 22px;
+        margin: 0;
+        border-radius: 999px;
+        background: var(--line-2);
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      input[type='checkbox']::after {
+        content: '';
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--text);
+        transition: transform 0.15s, background 0.15s;
+      }
+      input[type='checkbox']:checked { background: var(--text); }
+      input[type='checkbox']:checked::after { transform: translateX(14px); background: var(--bg); }
+      input[type='checkbox']:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+      hr.sep { border: 0; border-top: 1px solid var(--line); margin: 20px 0 4px; }
+
+      .updatebar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 18px;
+        background: rgba(23, 25, 30, 0.8);
+        backdrop-filter: saturate(160%) blur(20px);
+        border-bottom: 1px solid var(--line);
+      }
+
+      /* Khung phụ đề: thứ người chơi nhìn nhiều nhất, nên là chỗ duy nhất có chữ lớn. */
+      .stage {
+        flex: 1 1 200px;
+        min-height: 170px;
+        overflow-y: auto;
+        margin: 0 18px 18px;
+        padding: 14px 16px;
+        background: var(--stage);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        white-space: pre-wrap;
+      }
+      .cue { margin-bottom: 14px; }
+      .cue .src { font-size: 12px; line-height: 16px; color: var(--text-3); margin-bottom: 2px; }
+      .cue .out { font-size: 16px; line-height: 24px; font-weight: 500; color: var(--text-3); }
+      .cue:last-child .out { color: var(--live); }
+      .cue:nth-last-child(2) .out { color: var(--text-2); }
+      .empty { color: var(--text-3); }
+
+      ::-webkit-scrollbar { width: 12px; }
+      ::-webkit-scrollbar-thumb {
+        background: var(--line-2);
+        border-radius: 6px;
+        border: 3px solid var(--bg);
+      }
+      .stage::-webkit-scrollbar-thumb { border-color: var(--stage); }
     </style>
   </head>
 
