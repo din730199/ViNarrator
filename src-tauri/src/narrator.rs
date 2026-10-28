@@ -1,39 +1,28 @@
-//! Narrator — worker thread: chụp -> (mask loại trừ) -> OCR -> (dịch) -> đọc. Port từ narrator.py.
+//! Narrator — worker thread: nghe tiếng game -> dịch sang tiếng Việt -> đọc.
 //! Trạng thái đẩy về UI qua event Tauri: "status" (chuỗi trạng thái) và "text" (câu vừa đọc).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
 
-use crate::capture;
-use crate::config::{self, Config, Region};
-use crate::dedup::LineDeduper;
-use crate::ocr::Ocr;
+use crate::config::{self, Config};
 use crate::translate::{self, Translator};
 use crate::tts::TtsEngine;
 
-/// Cờ dựng lại từng phần. Trước đây gộp làm một nên kéo thanh "nhịp quét" cũng khiến OneOCR
-/// khởi tạo lại (~100-300ms) và deduper mất sạch lịch sử -> đọc lặp câu đang hiện.
+/// Cờ dựng lại từng phần.
 #[derive(Default)]
 struct Reload {
-    ocr: AtomicBool,
     translate: AtomicBool,
-    dedup: AtomicBool,
     /// Cấu hình nghe đổi -> thả cái tai đang chạy để nó dựng lại với key/ngôn ngữ mới.
     asr: AtomicBool,
 }
 
 impl Reload {
     fn all() -> Self {
-        Self {
-            ocr: AtomicBool::new(true),
-            translate: AtomicBool::new(true),
-            dedup: AtomicBool::new(true),
-            asr: AtomicBool::new(false),
-        }
+        Self { translate: AtomicBool::new(true), asr: AtomicBool::new(false) }
     }
 }
 
@@ -94,18 +83,10 @@ impl Narrator {
         self.running.load(Ordering::Relaxed)
     }
 
-    /// Kiểm những thứ hay hỏng nhất **trước** khi bật, đồng bộ, để báo ngay thay vì để worker
-    /// âm thầm rẽ sang đường khác.
-    ///
-    /// Ca thật đang có: chọn nguồn "nghe tiếng game" + bản chạy máy mà chưa tải model thì
-    /// `can_tai` ở [`Worker::run`] ra `false`, vòng lặp lặng lẽ rơi xuống nhánh chụp màn hình.
-    /// App vẫn đọc — đọc phụ đề trong vùng quét — nên người dùng không hề biết mình đang không
-    /// dùng cái mình vừa chọn, chỉ thấy "sao nó bắt sai hết vậy".
+    /// Kiểm những thứ hay hỏng nhất **trước** khi bật, đồng bộ, để báo ngay thay vì bật lên rồi
+    /// ngồi im không nghe gì.
     pub fn preflight(&self) -> Result<(), String> {
         let c = self.cfg.lock().unwrap();
-        if c.source != "audio" {
-            return Ok(());
-        }
         if c.asr_engine == "speechmatics" {
             if c.speechmatics_key.trim().is_empty() {
                 return Err("Chưa có API key Speechmatics — điền key, hoặc đổi sang bản chạy máy."
@@ -113,10 +94,7 @@ impl Narrator {
             }
             return Ok(());
         }
-        if !crate::asr::ready() {
-            return Err("Chưa tải model nghe (~198 MB) — bấm Tải model, hoặc đổi sang Speechmatics."
-                .into());
-        }
+        // Bản chạy máy chưa có model: KHÔNG chặn — lib.rs tải ở nền, xong worker tự nghe.
         Ok(())
     }
 
@@ -139,19 +117,6 @@ impl Narrator {
         }
     }
 
-    /// Đổi chế độ = đổi ngôn ngữ OCR VÀ hướng dịch, lịch sử dedup cũng thành vô nghĩa.
-    pub fn set_mode(&self, mode: &str) {
-        self.edit(|c| c.apply_mode(mode));
-        for f in [&self.reload.ocr, &self.reload.translate, &self.reload.dedup] {
-            f.store(true, Ordering::Relaxed);
-        }
-    }
-
-    /// source: "screen" | "audio". Vòng lặp worker tự bật/tắt cái tai ở nhịp kế tiếp.
-    pub fn set_source(&self, source: String) {
-        self.edit(|c| c.source = source.clone());
-    }
-
     /// Đổi cách nghe. Cái tai đang chạy phải dựng lại thì mới ăn cấu hình mới — hạ cờ
     /// `running` một nhịp là vòng lặp worker tự thả `Tai` cũ rồi bật cái mới.
     pub fn set_asr(&self, engine: String, key: String, language: String) {
@@ -161,11 +126,8 @@ impl Narrator {
             c.asr_language = language.clone();
         });
         self.reload.asr.store(true, Ordering::Relaxed);
-    }
-
-    pub fn set_engine(&self, engine: String) {
-        self.edit(|c| c.ocr_engine = engine.clone());
-        self.reload.ocr.store(true, Ordering::Relaxed);
+        // Ngôn ngữ nguồn của khâu dịch đi theo tiếng đang nghe.
+        self.reload.translate.store(true, Ordering::Relaxed);
     }
 
     /// engine: "google" | "llm". Các field LLM chỉ có tác dụng khi engine = "llm".
@@ -178,25 +140,6 @@ impl Narrator {
             c.llm_context_lines = context_lines;
         });
         self.reload.translate.store(true, Ordering::Relaxed);
-    }
-
-    /// Các knob tinh chỉnh trước đây chỉ sửa được bằng tay trong config.json.
-    pub fn set_tuning(
-        &self,
-        interval_ms: u64,
-        min_line_len: usize,
-        min_clean_ratio: f32,
-        fuzzy_threshold: f64,
-    ) {
-        self.edit(|c| {
-            c.interval_ms = interval_ms.clamp(200, 5000);
-            c.min_line_len = min_line_len.clamp(1, 20);
-            c.min_clean_ratio = min_clean_ratio.clamp(0.0, 1.0);
-            c.fuzzy_threshold = fuzzy_threshold.clamp(0.5, 1.0);
-        });
-        // interval_ms và min_clean_ratio đọc thẳng từ cfg mỗi vòng; min_line_len và
-        // fuzzy_threshold nằm trong deduper nên phải dựng lại.
-        self.reload.dedup.store(true, Ordering::Relaxed);
     }
 
     /// engine: "windows" | "vieneu".
@@ -236,14 +179,6 @@ impl Narrator {
         });
     }
 
-    pub fn set_region(&self, region: Region) {
-        self.edit(|c| c.region = region);
-    }
-
-    pub fn set_exclude(&self, region: Option<Region>) {
-        self.edit(|c| c.exclude_region = region);
-    }
-
     pub fn shutdown(&self) {
         self.quit.store(true, Ordering::Relaxed);
         self.tts.shutdown();
@@ -266,15 +201,8 @@ impl Worker {
     }
 
     fn run(self) {
-        crate::ensure_com();
-        let mut ocr: Option<Ocr> = None;
-        let mut deduper = {
-            let c = self.cfg.lock().unwrap();
-            LineDeduper::new(c.dedup_require_stable, c.min_line_len, c.fuzzy_threshold)
-        };
-
-        // Dịch + đọc chạy ở thread RIÊNG: một câu dịch bằng AI tốn 200-800ms, để chung vòng
-        // chụp thì khung kế tiếp bị trễ đúng ngần ấy và phụ đề đổi trong lúc đó là mất luôn.
+        // Dịch + đọc chạy ở thread RIÊNG: một câu dịch bằng AI tốn 200-800ms, để chung thread
+        // nghe thì tiếng tới trong lúc đó dồn lại.
         let (tx, rx) = mpsc::channel::<Msg>();
         {
             let (app, tts, last_text, running) = (
@@ -286,9 +214,8 @@ impl Worker {
             std::thread::spawn(move || translate_loop(app, tts, last_text, running, rx));
         }
 
-        // Nguồn âm thanh sống trong thread RIÊNG: `cpal::Stream` và stream của sherpa đều
-        // `!Send`, phải dựng và chết trong cùng một thread. Nó tự bơm câu vào đúng `tx` mà
-        // OCR đang dùng, nên khâu dịch + đọc không biết câu đến từ đâu.
+        // Cái tai sống trong thread RIÊNG: `cpal::Stream` và stream của sherpa đều `!Send`, phải
+        // dựng và chết trong cùng một thread.
         let mut tai: Option<Tai> = None;
 
         loop {
@@ -298,12 +225,17 @@ impl Worker {
             }
             let cfg = self.cfg.lock().unwrap().clone();
 
-            // Bật/tắt cái tai theo nguồn đang chọn. Chưa tải model thì KHÔNG bật — rơi xuống
-            // đường OCR bên dưới để app vẫn nói được gì đó thay vì câm.
+            if self.reload.translate.swap(false, Ordering::Relaxed) {
+                let _ = tx.send(Msg::Reload(Box::new(cfg.clone())));
+                if tai.is_none() {
+                    self.status(format!("Sẵn sàng — {}", translate::describe(&cfg)));
+                }
+            }
+
             // Speechmatics chạy trên mạng nên KHÔNG cần model tải về; chỉ bản chạy máy mới cần.
-            let can_tai = cfg.source == "audio"
-                && self.running.load(Ordering::Relaxed)
-                && (cfg.asr_engine == "speechmatics" || crate::asr::ready());
+            // Chưa tải xong thì chờ — tải xong vòng sau tự bật, không phải bấm lại.
+            let can_tai = self.running.load(Ordering::Relaxed)
+                && (cfg.asr_engine == "speechmatics" || crate::asr::ready(&cfg.asr_language));
             // Đổi engine/key/ngôn ngữ giữa chừng -> thả cái tai cũ, nhánh dưới bật lại ngay.
             if self.reload.asr.swap(false, Ordering::Relaxed) {
                 tai.take();
@@ -314,81 +246,12 @@ impl Worker {
                 }
                 (false, true) => {
                     tai.take();
-                    self.status("Đã tắt nghe tiếng game");
+                    self.status("Đã dừng nghe");
                 }
                 _ => {}
             }
-            if tai.is_some() {
-                // Nguồn âm thanh không cần chụp màn hình, không cần OCR: ngủ rồi vòng lại.
-                std::thread::sleep(Duration::from_millis(200));
-                continue;
-            }
-
-            let redo_ocr = self.reload.ocr.swap(false, Ordering::Relaxed);
-            let redo_translate = self.reload.translate.swap(false, Ordering::Relaxed);
-            if self.reload.dedup.swap(false, Ordering::Relaxed) {
-                deduper =
-                    LineDeduper::new(cfg.dedup_require_stable, cfg.min_line_len, cfg.fuzzy_threshold);
-            }
-            if redo_translate {
-                let _ = tx.send(Msg::Reload(Box::new(cfg.clone())));
-            }
-
-            if redo_ocr {
-                // Lần đầu chọn OneOCR phải chép ~110MB từ gói Snipping Tool -> báo trước
-                // để người dùng không tưởng app treo.
-                if cfg.ocr_engine != "windows" && !crate::oneocr::runtime_ready() {
-                    self.status("Đang chép engine OneOCR từ Snipping Tool (~110 MB, chỉ lần đầu)...");
-                } else {
-                    self.status("Đang khởi tạo OCR...");
-                }
-                match Ocr::new(&cfg) {
-                    Ok(o) => {
-                        ocr = Some(o);
-                    }
-                    Err(e) => {
-                        self.status(format!("Lỗi khởi tạo OCR: {e}"));
-                        ocr = None;
-                    }
-                }
-                deduper.reset();
-            }
-
-            // Thanh trạng thái gộp cả hai vế nên phải cập nhật khi BẤT KỲ vế nào đổi.
-            if let Some(o) = ocr.as_ref().filter(|_| redo_ocr || redo_translate) {
-                self.status(format!("Sẵn sàng — {}, {}", o.info(), translate::describe(&cfg)));
-            }
-
-            let Some(engine) = ocr.as_ref().filter(|_| self.running.load(Ordering::Relaxed)) else {
-                std::thread::sleep(Duration::from_millis(100));
-                continue;
-            };
-
-            let t0 = Instant::now();
-            if let Err(e) = self.tick(engine, &tx, &mut deduper, &cfg) {
-                self.status(format!("Lỗi: {e}"));
-            }
-            // Giữ nhịp ~interval (trừ thời gian OCR đã tốn) -> không cộng dồn -> nhạy hơn.
-            let elapsed = t0.elapsed();
-            let interval = Duration::from_millis(cfg.interval_ms);
-            std::thread::sleep(interval.saturating_sub(elapsed).max(Duration::from_millis(20)));
+            std::thread::sleep(Duration::from_millis(100));
         }
-    }
-
-    fn tick(
-        &self,
-        engine: &Ocr,
-        tx: &Sender<Msg>,
-        deduper: &mut LineDeduper,
-        cfg: &Config,
-    ) -> Result<(), String> {
-        let (mut rgba, w, h) = capture::grab_rgba(&cfg.region)?;
-        capture::mask_exclusion(&mut rgba, w, h, &cfg.region, cfg.exclude_region.as_ref());
-        let text = engine.recognize_rgba(&rgba, w, h, cfg)?;
-        for line in deduper.feed(&text) {
-            let _ = tx.send(Msg::Line(line));
-        }
-        Ok(())
     }
 }
 
@@ -442,7 +305,7 @@ enum Msg {
 /// cùng lý do hàng đợi TTS cap 3.
 const MAX_PENDING: usize = 3;
 
-/// Một mục log: giữ cả bản gốc để phân biệt lỗi OCR với lỗi dịch.
+/// Một mục log: giữ cả bản gốc để phân biệt nghe sai với dịch sai.
 #[derive(Clone, serde::Serialize)]
 struct Spoken {
     src: String,

@@ -1,12 +1,13 @@
-//! Dịch text trước khi đọc. Hai đường:
-//!   - Google Translate (endpoint web `client=gtx`, không cần key) — nhanh, dịch từng câu rời rạc.
+//! Dịch câu nghe được sang tiếng Việt. Hai đường:
+//!   - Google Translate (endpoint web `client=gtx`, không cần key) — nhanh; gửi kèm câu trước
+//!     làm ngữ cảnh rồi chỉ lấy phần dịch của câu hiện tại, xem [`cat_phan_sau`].
 //!   - LLM qua API **OpenAI-compatible** (`/chat/completions`): Groq, Gemini, OpenRouter,
 //!     DeepSeek, OpenAI... chỉ khác `base_url` + `model` nên dùng chung một code path.
 //! LLM được gửi kèm vài câu trước làm ngữ cảnh — đó là chỗ nó hơn Google Dịch (chọn đại từ
 //! xưng hô nhất quán, hiểu thuật ngữ game).
 //! Mọi lỗi đều lùi về Google, rồi cuối cùng là nguyên văn — không bao giờ chặn luồng đọc.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
@@ -19,6 +20,10 @@ const COOLDOWN: Duration = Duration::from_secs(60);
 const MAX_EXPANSION: usize = 5;
 /// Chặn trên cho một lượt gọi. Dài hơn thì giọng đọc trễ thấy rõ, thà lùi về Google.
 const TIMEOUT: Duration = Duration::from_secs(6);
+/// Số câu đã dịch giữ lại. Game lặp thoại liên tục (NPC chào, câu hệ thống, combat bark).
+const NHO_TOI_DA: usize = 500;
+/// Câu trước cũ hơn mức này thì không gửi làm ngữ cảnh nữa — cảnh khác, người nói khác.
+const NGU_CANH_GOOGLE: Duration = Duration::from_secs(30);
 
 struct Llm {
     base_url: String,
@@ -27,10 +32,13 @@ struct Llm {
 }
 
 pub struct Translator {
-    pub enabled: bool,
+    /// Mã ngôn ngữ nguồn kiểu Google ("en", "ja", "ko", "zh-CN"). Đích luôn là tiếng Việt.
     source: String,
-    target: String,
     llm: Option<Llm>,
+    /// Câu gốc -> bản dịch. Có trong đây thì khỏi gọi mạng: nhanh hơn và đỡ bị Google chặn 429.
+    nho: HashMap<String, String>,
+    /// Câu gốc ngay trước + lúc nghe được, làm ngữ cảnh cho Google.
+    truoc: Option<(String, Instant)>,
     /// Câu **gốc** (chưa dịch) gần nhất — LLM cần đọc mạch ngôn ngữ nguồn, không phải bản dịch.
     context: VecDeque<String>,
     /// 0 = tắt gửi ngữ cảnh (dịch từng câu rời, rẻ token và nhanh hơn).
@@ -59,10 +67,10 @@ impl Translator {
             }
         });
         Self {
-            enabled: cfg.translate,
-            source: cfg.translate_from.clone(),
-            target: cfg.translate_to.clone(),
+            source: google_lang(&cfg.asr_language).into(),
             llm,
+            nho: HashMap::new(),
+            truoc: None,
             context: VecDeque::new(),
             context_lines: cfg.llm_context_lines.min(MAX_CONTEXT_LINES),
             notice: String::new(),
@@ -73,8 +81,13 @@ impl Translator {
     }
 
     pub fn translate(&mut self, text: &str) -> String {
-        if !self.enabled || text.trim().is_empty() {
+        let key = text.trim();
+        if key.is_empty() {
             return text.to_string();
+        }
+        if let Some(o) = self.nho.get(key).cloned() {
+            self.remember(key);
+            return o;
         }
         let out = match self.via_llm(text).or_else(|| self.via_google(text)) {
             Some(o) => {
@@ -83,6 +96,11 @@ impl Translator {
                 if self.llm.is_none() {
                     self.set_notice(String::new());
                 }
+                // shortcut: đầy thì xoá sạch thay vì bỏ câu cũ nhất (LRU); 500 câu là cả buổi chơi.
+                if self.nho.len() >= NHO_TOI_DA {
+                    self.nho.clear();
+                }
+                self.nho.insert(key.to_string(), o.clone());
                 o
             }
             // Hỏng hết: vẫn trả nguyên văn để không nuốt câu, nhưng PHẢI báo — trước đây im lặng
@@ -92,7 +110,7 @@ impl Translator {
                 text.to_string()
             }
         };
-        self.remember(text);
+        self.remember(key);
         out
     }
 
@@ -109,6 +127,7 @@ impl Translator {
     }
 
     fn remember(&mut self, text: &str) {
+        self.truoc = Some((text.trim().to_string(), Instant::now()));
         if self.context_lines == 0 {
             return;
         }
@@ -134,7 +153,7 @@ impl Translator {
             "temperature": 0.2,
             "max_tokens": 400,
             "messages": [
-                { "role": "system", "content": system_prompt(&self.target) },
+                { "role": "system", "content": system_prompt(&self.source) },
                 { "role": "user", "content": user_prompt(&self.context, text) },
             ],
         });
@@ -173,9 +192,11 @@ impl Translator {
             self.set_notice("AI trả lời dài bất thường — câu này dùng Google Dịch".into());
             return None;
         }
-        // Model hay trả lại nguyên câu tiếng Anh (nhất là câu ngắn, hoặc khi nó tưởng là "chữ
-        // rác OCR") — đó là lỗi, không phải bản dịch. Bỏ để Google dịch thay.
-        if out.trim().eq_ignore_ascii_case(text.trim()) && text.chars().any(char::is_alphabetic) {
+        // Model hay trả lại nguyên câu gốc (nhất là câu ngắn) — đó là lỗi, không phải bản dịch.
+        // Bỏ để Google dịch thay. (Google thì KHÔNG xét trùng: tên riêng, tiếng cười nó trả y
+        // nguyên là đúng — xem `chua_dich`.)
+        let trung = out.trim().eq_ignore_ascii_case(text.trim()) && text.chars().any(char::is_alphabetic);
+        if trung || chua_dich(&out) {
             return None;
         }
         self.set_notice(String::new());
@@ -202,12 +223,32 @@ impl Translator {
     }
 
     /// Err(true) = đáng thử lại, Err(false) = bỏ luôn.
+    ///
+    /// Gửi kèm câu trước (cách một dòng) để Google chọn nghĩa và xưng hô theo mạch thoại. Google
+    /// trả bản dịch tách theo từng câu gốc nên cắt lấy đúng phần của câu hiện tại được.
     fn google_once(&self, text: &str) -> Result<String, bool> {
+        let truoc = self.truoc.as_ref().filter(|(_, luc)| luc.elapsed() < NGU_CANH_GOOGLE);
+        if let Some((p, _)) = truoc {
+            // Mỗi vế phải đúng một dòng, không thì dấu xuống dòng ngăn cách mất tác dụng.
+            let mot_dong = |s: &str| s.replace(['\r', '\n'], " ");
+            let body = self.google_get(&format!("{}\n{}", mot_dong(p), mot_dong(text.trim())))?;
+            if let Some(out) = cat_phan_sau(&body) {
+                return if chua_dich(&out) { Err(true) } else { Ok(out) };
+            }
+            // Không tách được (Google gộp hai câu làm một đoạn) -> dịch riêng câu này.
+        }
+        let out = parse_google(&self.google_get(text)?).ok_or(true)?;
+        if chua_dich(&out) {
+            return Err(true);
+        }
+        Ok(out)
+    }
+
+    fn google_get(&self, q: &str) -> Result<String, bool> {
         let url = format!(
-            "https://translate.googleapis.com/translate_a/single?client=gtx&sl={}&tl={}&dt=t&q={}",
+            "https://translate.googleapis.com/translate_a/single?client=gtx&sl={}&tl=vi&dt=t&q={}",
             self.source,
-            self.target,
-            urlencoding::encode(text)
+            urlencoding::encode(q)
         );
         let res = self.client.get(&url).send().map_err(|e| {
             eprintln!("[translate] Google lỗi: {e}");
@@ -217,10 +258,7 @@ impl Translator {
             eprintln!("[translate] Google trả {}", res.status());
             return Err(true);
         }
-        let body = res.text().map_err(|_| true)?;
-        // Body không phải JSON dịch (trang chặn / captcha) cũng tính là hỏng chứ không phải
-        // "dịch ra rỗng".
-        parse_google(&body).ok_or(true)
+        res.text().map_err(|_| true)
     }
 }
 
@@ -233,9 +271,6 @@ fn llm_enabled(cfg: &Config) -> bool {
 /// Mô tả cho thanh trạng thái. Tính thẳng từ Config (không cần dựng Translator) vì Translator
 /// nay sống ở thread dịch riêng, thread chụp không với tới được.
 pub fn describe(cfg: &Config) -> String {
-    if !cfg.translate {
-        return "dịch OFF".into();
-    }
     if !llm_enabled(cfg) {
         return "dịch Google".into();
     }
@@ -245,22 +280,31 @@ pub fn describe(cfg: &Config) -> String {
     }
 }
 
-fn lang_name(code: &str) -> &str {
-    if code.starts_with("vi") {
-        "tiếng Việt"
-    } else {
-        code
+/// Mã ngôn ngữ của app (cũng là mã Speechmatics) -> mã Google. Google cần "zh-CN", không nhận "zh".
+pub fn google_lang(code: &str) -> &str {
+    match code {
+        "zh" => "zh-CN",
+        c => c,
     }
 }
 
-fn system_prompt(target: &str) -> String {
+pub fn ten_tieng(code: &str) -> &str {
+    match code {
+        "ja" => "tiếng Nhật",
+        "ko" => "tiếng Hàn",
+        c if c.starts_with("zh") => "tiếng Trung",
+        _ => "tiếng Anh",
+    }
+}
+
+fn system_prompt(source: &str) -> String {
     format!(
-        "Bạn dịch phụ đề game/phim sang {}. Quy tắc:\n\
+        "Bạn dịch lời thoại game/phim từ {} sang tiếng Việt. Quy tắc:\n\
          - CHỈ trả về bản dịch, ĐÚNG MỘT DÒNG, không giải thích, không ngoặc kép, không thêm ghi chú.\n\
          - Văn nói tự nhiên, đúng giọng nhân vật; giữ nguyên tên riêng và thuật ngữ game.\n\
          - Dựa vào các câu trước để chọn đại từ xưng hô cho nhất quán.\n\
-         - Nếu câu là chữ rác do OCR đọc sai, trả lại đúng nguyên văn, đừng bịa.",
-        lang_name(target)
+         - Câu do máy nghe giọng nói chép lại nên có thể sai vài từ: đoán theo ngữ cảnh, đừng bịa thêm.",
+        ten_tieng(source)
     )
 }
 
@@ -295,7 +339,7 @@ fn parse_llm(body: &str) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Cắt rác quanh bản dịch. Đầu vào luôn là MỘT dòng (deduper tách sẵn) nên nhiều dòng nghĩa là
+/// Cắt rác quanh bản dịch. Đầu vào luôn là MỘT câu (khâu nghe tách sẵn) nên nhiều dòng nghĩa là
 /// model lải nhải trước khi ra kết quả -> lấy dòng cuối.
 fn clean(s: &str) -> String {
     let last = s.trim().rsplit('\n').find(|l| !l.trim().is_empty()).unwrap_or("");
@@ -314,6 +358,32 @@ fn parse_google(body: &str) -> Option<String> {
     } else {
         Some(out)
     }
+}
+
+/// Bản "dịch" vẫn còn hơn 1/3 số chữ là chữ Nhật/Hàn/Trung, tức Google trả lại nguyên văn (bắt
+/// được 10/2026: cùng một câu tiếng Nhật, một lượt ra "5十円の学校販売のパンを買う.", các lượt
+/// khác dịch đúng) — thử lại thường là được.
+///
+/// KHÔNG xét "trùng câu gốc": bản trước có xét, và tên riêng ("Shepard."), tiếng cười ("Ha ha
+/// ha.") — Google trả y nguyên là ĐÚNG — bị thử lại 3 lần, chậm thêm ~1,4s rồi còn báo lỗi oan.
+fn chua_dich(dich: &str) -> bool {
+    let cjk = |c: char| {
+        matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0x1100..=0x11FF
+            | 0x3130..=0x318F | 0xAC00..=0xD7AF)
+    };
+    let chu = dich.chars().filter(|c| c.is_alphabetic()).count();
+    dich.chars().filter(|&c| cjk(c)).count() * 3 > chu
+}
+
+/// Lấy phần dịch của câu hiện tại từ body của lượt gửi "câu trước\ncâu này". Google giữ nguyên
+/// dấu xuống dòng trong bản dịch, nhưng tách đoạn mỗi thứ tiếng một kiểu (đo 10/2026): tiếng Anh
+/// ra hai đoạn, còn Nhật/Hàn/Trung dịch vòng qua tiếng Anh nên ra MỘT đoạn chứa "\n" — vì vậy cắt
+/// theo dấu xuống dòng chứ không theo đoạn. Không có dấu đó (bị gộp) -> None.
+fn cat_phan_sau(body: &str) -> Option<String> {
+    let tat_ca = parse_google(body)?;
+    let (_, sau) = tat_ca.split_once('\n')?;
+    let sau = sau.trim();
+    (!sau.is_empty()).then(|| sau.to_string())
 }
 
 #[cfg(test)]
@@ -342,9 +412,46 @@ mod tests {
     }
 
     #[test]
-    fn tat_dich_tra_nguyen_van() {
-        let mut t = Translator::new(&Config { translate: false, ..Config::default() });
-        assert_eq!(t.translate("Hello"), "Hello");
+    fn google_chi_lay_phan_cua_cau_hien_tai() {
+        // Body thật (rút gọn) Google trả 10/2026. Tiếng Anh: hai đoạn.
+        let en = r#"[[["Cô ấy đã rời bỏ tôi.\n","She left me.\n",null,null,3],["Tôi sẽ tìm cô ấy.","I will find her.",null,null,3]],null,"en"]"#;
+        assert_eq!(cat_phan_sau(en).as_deref(), Some("Tôi sẽ tìm cô ấy."));
+        // Tiếng Nhật: MỘT đoạn chứa "\n" — cắt theo đoạn là hỏng ở đây.
+        let ja = r#"[[["Bạn là ai?\nTôi là anh trai của bạn.","お前は誰だ？\n俺はお前の兄だ。",null,null,3]],null,"ja"]"#;
+        assert_eq!(cat_phan_sau(ja).as_deref(), Some("Tôi là anh trai của bạn."));
+        // Mất dấu xuống dòng (gộp làm một câu) -> None để dịch riêng câu này.
+        let gop = r#"[[["Ta là vua, quỳ xuống!","I am the king. Kneel!",null,null,3]],null,"en"]"#;
+        assert!(cat_phan_sau(gop).is_none());
+    }
+
+    #[test]
+    fn nhan_ra_ban_dich_van_la_nguyen_van() {
+        assert!(chua_dich("5十円の学校販売のパンを買う."));
+        assert!(chua_dich("집에 가요."));
+        assert!(!chua_dich("Quỳ xuống!"));
+        // Google trả y nguyên tên riêng / tiếng cười là đúng — đo thật 10/2026, không được thử lại.
+        assert!(!chua_dich("Shepard."));
+        assert!(!chua_dich("Ha ha ha."));
+        // Bản dịch đúng mà còn giữ một tên riêng chữ Hán thì KHÔNG được coi là lỗi.
+        assert!(!chua_dich("Tôi sẽ đến chùa 金閣寺 vào ngày mai cùng với bạn bè của tôi."));
+    }
+
+    #[test]
+    fn cau_da_dich_khong_goi_mang_lai() {
+        let mut t = Translator::new(&Config::default());
+        t.nho.insert("Hello".into(), "Xin chào".into());
+        // Không có mạng giả nào ở đây: gọi Google thật sẽ ra khác hoặc lỗi. Trùng là nhờ bộ nhớ.
+        assert_eq!(t.translate("  Hello "), "Xin chào");
+        // Câu vừa lấy từ bộ nhớ vẫn phải thành ngữ cảnh cho câu sau.
+        assert_eq!(t.truoc.as_ref().map(|(s, _)| s.as_str()), Some("Hello"));
+    }
+
+    #[test]
+    fn ngon_ngu_nguon_theo_tieng_trong_game() {
+        for (vao, ra) in [("en", "en"), ("ja", "ja"), ("ko", "ko"), ("zh", "zh-CN")] {
+            let t = Translator::new(&Config { asr_language: vao.into(), ..Config::default() });
+            assert_eq!(t.source, ra);
+        }
     }
 
     #[test]

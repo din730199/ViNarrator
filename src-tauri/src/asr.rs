@@ -1,15 +1,11 @@
-//! Nguồn **âm thanh**: nghe tiếng game ở loopback rồi nhận dạng tại chỗ (sherpa-onnx streaming
-//! zipformer). Dành cho game KHÔNG có phụ đề, hoặc phụ đề nằm ngoài vùng quét.
+//! Nghe tiếng game ở loopback rồi nhận dạng tại chỗ. Câu nhận được đi sang khâu dịch + đọc —
+//! xem [`crate::narrator`].
 //!
-//! Chạy hoàn toàn offline, không key, không quota. Câu nhận được đi vào đúng đường dịch + đọc
-//! của nguồn màn hình — xem [`crate::narrator`].
-//!
-//! Hai bộ não để chọn: **chạy máy** (zipformer EN int8, 190 MB + 7,6 MB dấu câu — chỉ tiếng
-//! Anh, không cần mạng, ~5,5% một nhân) và **Speechmatics** (đám mây, cần API key, nhiều thứ
-//! tiếng, chữ trả về đã có sẵn dấu câu). Phần bắt loopback, cổng chặn và gom câu dùng chung —
-//! xem [`Nao`]. Muốn nghe tiếng Trung/Nhật bằng nguồn âm thanh thì phải dùng Speechmatics; bản
-//! chạy máy cố tình chọn model chuyên tiếng Anh vì bản đa ngữ nghe tiếng Anh kém hơn hẳn (xem
-//! [`REPO`]).
+//! Ba bộ não: **chạy máy tiếng Anh** (zipformer streaming EN int8, 190 MB + 7,6 MB dấu câu,
+//! ~5,5% một nhân), **chạy máy Nhật/Hàn/Trung** (SenseVoice int8 239 MB + VAD silero, chữ ra đã
+//! có dấu câu — xem [`SV_REPO`]) và **Speechmatics** (đám mây, cần API key). Phần bắt loopback,
+//! cổng chặn và gom câu dùng chung — xem [`Nao`]. Tiếng Anh cố tình giữ model chuyên tiếng Anh
+//! vì bản đa ngữ nghe tiếng Anh kém hơn hẳn (xem [`REPO`]).
 //!
 //! **Vì sao không có khử vọng (AEC).** Bản gốc mà kiến trúc này bê về (RiTaiAI) bắt HAI luồng —
 //! mic và loopback — nên phải khử tiếng loa lọt vào mic. Ở đây không có mic, chỉ loopback, nên
@@ -33,8 +29,10 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, SupportedStreamConfig};
 use sherpa_onnx::{
-    OnlinePunctuation, OnlinePunctuationConfig, OnlinePunctuationModelConfig, OnlineRecognizer,
-    OnlineRecognizerConfig, OnlineStream,
+    LinearResampler, OfflineRecognizer, OfflineRecognizerConfig, OnlinePunctuation,
+    OnlinePunctuationConfig, OnlinePunctuationModelConfig, OnlineRecognizer,
+    OnlineRecognizerConfig, OnlineStream, SileroVadModelConfig, VadModelConfig,
+    VoiceActivityDetector,
 };
 
 use crate::runtime::{self, NO_WINDOW};
@@ -89,6 +87,30 @@ const FILES: [(&str, u64); 4] =
     [(ENC, 187_823_992), (DEC, 2_092_566), (JOIN, 259_335), (TOKENS, 5_048)];
 const PUNCT_FILES: [(&str, u64); 2] = [(PUNCT_MODEL, 7_490_500), (PUNCT_VOCAB, 149_430)];
 
+/// SenseVoice-small int8 (bản gốc 2024-07-17) cho tiếng Nhật, Hàn, Trung: một model nghe được cả ba,
+/// tự thêm dấu câu (`use_itn`). Không phải streaming — nghe trọn một quãng nói rồi mới chép —
+/// nên đi cùng VAD silero để cắt quãng; trễ ≈ khoảng lặng chốt câu ([`SV_IM_CHOT`]) + vài chục ms
+/// giải mã. Streaming tiếng Nhật thì sherpa không có model nào; tiếng Hàn có nhưng phải tải riêng.
+/// Nằm ở thư mục con: `tokens.txt` trùng tên với file của model tiếng Anh.
+const SV_REPO: &str =
+    "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main";
+// KHÔNG lấy bản `…-int8-2025-09-09` dù tên giống và mới hơn: đó là bản tinh chỉnh tiếng Quảng Đông
+// (WSYue-ASR) — đã thử, tiếng Nhật ra toàn chữ Hán, không kana, không dấu câu.
+const SV_MODEL: &str = "model.int8.onnx";
+const VAD_URL: &str =
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
+const VAD_MODEL: &str = "silero_vad.onnx";
+const SV_FILES: [(&str, u64); 3] =
+    [(SV_MODEL, 239_233_841), (TOKENS, 315_894), (VAD_MODEL, 643_854)];
+/// Silero chạy theo khung 512 mẫu ở 16 kHz.
+const VAD_KHUNG: usize = 512;
+/// Im ngần này thì VAD chốt quãng nói. SenseVoice chỉ chép được SAU khi chốt, mọi mili giây chờ ở
+/// đây cộng thẳng vào độ trễ. Đã thử hạ xuống 0,3s (10/2026): nhanh hơn 0,2s nhưng câu bị chẻ ở chỗ
+/// người nói ngừng một nhịp, dịch ra vụn — trả về 0,5s.
+const SV_IM_CHOT: f32 = 0.5;
+/// Nói một hơi quá ngần này thì VAD tự cắt — giữ bản dịch không tới quá muộn.
+const SV_DAI_NHAT: f32 = 8.0;
+
 /// Đuôi câu chưa có dấu kết mà im lặng quá ngần này thì chốt luôn, đừng giữ mãi trong bộ gom.
 /// Nghe tiếng người nói ngập ngừng ("But…", "I…") sinh ra rất nhiều mẩu một từ; giữ lâu quá thì
 /// bản dịch tới muộn, chốt sớm quá thì lại chẻ vụn đúng cái tật đang phải sửa.
@@ -121,19 +143,51 @@ pub fn dir() -> PathBuf {
         .join("asr")
 }
 
-/// Đủ 4 file và đúng kích thước. Không dùng file marker riêng như VieNeu vì ở đây chỉ có tải
-/// file, không có bước cài đặt nào có thể hỏng nửa chừng mà file vẫn đủ.
-pub fn ready() -> bool {
-    let d = dir();
-    FILES
-        .iter()
-        .chain(PUNCT_FILES.iter())
-        .all(|(f, n)| std::fs::metadata(d.join(f)).map(|m| m.len() == *n).unwrap_or(false))
+fn dir_sv() -> PathBuf {
+    dir().join("sensevoice")
 }
 
-/// Tải model (~198 MB, gồm 7,6 MB dấu câu). Gọi lại khi đã đủ thì trả về ngay.
-pub fn ensure_model(bao: runtime::BaoTien) -> Result<(), String> {
-    if ready() {
+/// Tiếng Anh dùng zipformer, mọi thứ tiếng khác dùng SenseVoice.
+fn dung_sv(lang: &str) -> bool {
+    lang != "en"
+}
+
+/// Dung lượng tải lần đầu cho thứ tiếng này, để báo lên thanh trạng thái.
+pub fn mb_can_tai(lang: &str) -> u32 {
+    if dung_sv(lang) { 240 } else { 198 }
+}
+
+/// Đủ file và đúng kích thước. Không dùng file marker riêng như VieNeu vì ở đây chỉ có tải
+/// file, không có bước cài đặt nào có thể hỏng nửa chừng mà file vẫn đủ.
+pub fn ready(lang: &str) -> bool {
+    if dung_sv(lang) {
+        let d = dir_sv();
+        return SV_FILES.iter().all(|(f, n)| du(&d.join(f), *n));
+    }
+    let d = dir();
+    FILES.iter().chain(PUNCT_FILES.iter()).all(|(f, n)| du(&d.join(f), *n))
+}
+
+/// Tải model cho thứ tiếng `lang`. Gọi lại khi đã đủ thì trả về ngay.
+pub fn ensure_model(lang: &str, bao: runtime::BaoTien) -> Result<(), String> {
+    if ready(lang) {
+        return Ok(());
+    }
+    if dung_sv(lang) {
+        let d = dir_sv();
+        std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+        runtime::du_dia(&d, 300)?;
+        for (f, n) in SV_FILES {
+            let dest = d.join(f);
+            if du(&dest, n) {
+                continue;
+            }
+            let url = if f == VAD_MODEL { VAD_URL.to_string() } else { format!("{SV_REPO}/{f}") };
+            // File cùng tên mà sai kích thước (tải dở, bản cũ): `fetch` thấy có file là bỏ qua.
+            let _ = std::fs::remove_file(&dest);
+            runtime::fetch(&url, &dest, f, bao)?;
+            kiem(&dest, n, f)?;
+        }
         return Ok(());
     }
     let d = dir();
@@ -247,7 +301,8 @@ pub fn setup(d: &Path) -> Result<OnlineRecognizer, String> {
     // 0,129 so với 0,116) vừa ra rác — cùng file mẫu nó đẻ thêm hai mẩu "H" và "Conf" ở đầu.
     c.decoding_method = Some("greedy_search".into());
     // Ngắt câu. Đường CHÍNH là rule2: im lặng 0,8s sau khi đã nói -> chốt. Thoại game gần như
-    // lúc nào cũng có nghỉ giữa các câu nên đường này gánh hầu hết.
+    // lúc nào cũng có nghỉ giữa các câu nên đường này gánh hầu hết. Đã thử 0,5s (10/2026): nhanh
+    // hơn 0,3s nhưng chơi thật thấy câu bị chẻ vụn ("Bold" / "And none too, wise") — trả về 0,8s.
     //
     // rule3 là lưới an toàn cho lúc nói một hơi không nghỉ. Tôi từng nới lên 12s để tránh nó
     // cắt giữa từ, nhưng như thế một đoạn độc thoại phải chờ tới 12 giây mới nghe được bản
@@ -288,6 +343,40 @@ fn moi(rec: &OnlineRecognizer, st: &OnlineStream, sr: u32) {
         rec.decode(st);
     }
     rec.reset(st);
+}
+
+/// SenseVoice + VAD. `lang` ép model nghe đúng thứ tiếng đã chọn: để "auto" thì quãng ngắn hay
+/// bị đoán nhầm ngôn ngữ (tiếng Nhật ngắn ra chữ Trung).
+fn setup_sv(lang: &str) -> Result<(OfflineRecognizer, VoiceActivityDetector), String> {
+    let d = dir_sv();
+    let p = |f: &str| Some(d.join(f).to_string_lossy().to_string());
+    let mut c = OfflineRecognizerConfig::default();
+    c.model_config.sense_voice.model = p(SV_MODEL);
+    c.model_config.sense_voice.language = Some(lang.into());
+    c.model_config.sense_voice.use_itn = true;
+    c.model_config.tokens = p(TOKENS);
+    // 2 luồng: câu tiếng Nhật 6s giải mã 367ms -> 224ms, tiếng Hàn 4,6s 207 -> 110ms. Chỉ chạy
+    // một lần ở cuối mỗi câu, nên luồng thứ hai bận chưa tới 0,25s — không giành CPU với game.
+    c.model_config.num_threads = 2;
+    c.model_config.provider = Some("cpu".into());
+    let rec = OfflineRecognizer::create(&c)
+        .ok_or("không dựng được SenseVoice — model hỏng hoặc tải dở")?;
+    let v = VadModelConfig {
+        silero_vad: SileroVadModelConfig {
+            model: p(VAD_MODEL),
+            threshold: 0.5,
+            min_silence_duration: SV_IM_CHOT,
+            min_speech_duration: 0.25,
+            window_size: VAD_KHUNG as i32,
+            max_speech_duration: SV_DAI_NHAT,
+        },
+        sample_rate: 16_000,
+        num_threads: 1,
+        provider: Some("cpu".into()),
+        ..Default::default()
+    };
+    let vad = VoiceActivityDetector::create(&v, 30.0).ok_or("không dựng được VAD")?;
+    Ok((rec, vad))
 }
 
 fn mo_stream(rec: &OnlineRecognizer, sr: u32) -> OnlineStream {
@@ -725,6 +814,67 @@ impl Nao for MayLocal {
     }
 }
 
+/// Bản SenseVoice: VAD cắt quãng nói, xong quãng nào chép quãng đó. Mỗi quãng đi thẳng sang
+/// dịch — không chẻ câu như tiếng Anh, vì tiếng Nhật/Trung không có khoảng trắng để
+/// [`chia_cau`] nhận ra ranh giới, và một quãng nói thường đã là một câu thoại.
+struct MaySense {
+    rec: OfflineRecognizer,
+    vad: VoiceActivityDetector,
+    /// Loopback mở được 16 kHz thì None; máy lùi về cpal (thường 48 kHz) mới phải hạ mẫu.
+    ha: Option<LinearResampler>,
+    /// Phần lẻ chưa đủ một khung VAD.
+    du: Vec<f32>,
+}
+
+impl MaySense {
+    fn moi(rec: OfflineRecognizer, vad: VoiceActivityDetector, sr: u32) -> Self {
+        let ha = (sr != 16_000).then(|| LinearResampler::create(sr as i32, 16_000)).flatten();
+        Self { rec, vad, ha, du: Vec::new() }
+    }
+
+    fn chep_cac_quang(&mut self, ra: &dyn Fn(String)) {
+        while let Some(q) = self.vad.front() {
+            let st = self.rec.create_stream();
+            st.accept_waveform(16_000, q.samples());
+            self.rec.decode(&st);
+            self.vad.pop();
+            let t = st.get_result().map(|r| r.text).unwrap_or_default();
+            if dang_ke(t.trim()) {
+                ra(t.trim().to_string());
+            }
+        }
+    }
+}
+
+impl Nao for MaySense {
+    fn nghe(&mut self, buf: &mut Vec<f32>, _sr: u32, ra: &dyn Fn(String)) -> Result<(), String> {
+        match &self.ha {
+            Some(h) => self.du.extend(h.resample(buf, false)),
+            None => self.du.extend_from_slice(buf),
+        }
+        buf.clear();
+        let n = self.du.len() / VAD_KHUNG * VAD_KHUNG;
+        for k in self.du[..n].chunks_exact(VAD_KHUNG) {
+            self.vad.accept_waveform(k);
+        }
+        self.du.drain(..n);
+        self.chep_cac_quang(ra);
+        Ok(())
+    }
+
+    fn xa(&mut self, buf: &mut Vec<f32>, sr: u32, ra: &dyn Fn(String)) {
+        let _ = self.nghe(buf, sr, ra);
+        // Câu đang nói dở lúc bấm dừng: VAD chưa thấy khoảng lặng nên chưa chốt — ép chốt.
+        self.vad.flush();
+        self.chep_cac_quang(ra);
+    }
+
+    fn mo_lai(&mut self) {
+        self.vad.reset();
+        self.du.clear();
+    }
+}
+
 /// Bản Speechmatics: gom đủ một lô rồi mới gửi, và rút chữ về ở mỗi nhịp.
 ///
 /// KHÔNG cần model dấu câu — Speechmatics trả chữ đã có sẵn dấu, [`Gom`] cắt được ngay.
@@ -965,6 +1115,14 @@ pub fn run(
             ngon_ngu: ngon_ngu.to_string(),
             lich: Lich::moi(),
         })
+    } else if dung_sv(ngon_ngu) {
+        let (rec, vad) = setup_sv(ngon_ngu)?;
+        bao(format!(
+            "Đang nghe tiếng game ({sr} Hz) — {} sẽ được dịch{}",
+            crate::translate::ten_tieng(ngon_ngu),
+            if bit_tai { " · máy cũ: phải bịt tai lúc app đọc nên sẽ sót câu" } else { "" }
+        ));
+        Box::new(MaySense::moi(rec, vad, sr))
     } else {
         let d = dir();
         let may = May { rec: setup(&d)?, punct: nap_dau_cau(&d) };
@@ -1091,17 +1249,47 @@ mod tests {
     fn tai_model_that() {
         let d = dir();
         let _ = std::fs::remove_dir_all(&d);
-        assert!(!ready(), "xoá rồi mà ready() vẫn true");
+        assert!(!ready("en"), "xoá rồi mà ready() vẫn true");
         // Giả bộ máy đã cài bản đa ngữ cũ: file 339 MB mang tên khác phải bị dọn, không được
         // nằm lại vĩnh viễn vì `ready()` chẳng bao giờ ngó tới nó.
         std::fs::create_dir_all(&d).unwrap();
         let cu = d.join("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx");
         std::fs::write(&cu, b"model doi ngu cu").unwrap();
 
-        ensure_model(&crate::runtime::im).expect("tải model");
-        assert!(ready(), "tải xong mà ready() vẫn false — kích thước ghim trong FILES sai?");
+        ensure_model("en", &crate::runtime::im).expect("tải model");
+        assert!(ready("en"), "tải xong mà ready() vẫn false — kích thước ghim trong FILES sai?");
         assert!(!cu.exists(), "model cũ vẫn nằm lại chiếm chỗ");
         setup(&d).expect("model tải về phải dựng được bộ nhận dạng");
+    }
+
+    /// Tải THẬT SenseVoice + VAD rồi nghe hai file mẫu tiếng Nhật/Hàn đi qua đúng đường chạy thật
+    /// (khung 512 mẫu, VAD cắt quãng) — chốt cả URL, kích thước ghim, lẫn việc ra đúng chữ.
+    /// File mẫu: `test_wavs/ja.wav`, `ko.wav` trong repo SenseVoice trên HuggingFace, đặt vào
+    /// thư mục `VN_SV_WAVS`.
+    ///     VN_SV_WAVS=<thư mục> cargo test --release --lib asr::tests::sense_voice -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn sense_voice_nghe_nhat_han_that() {
+        let thu_muc = PathBuf::from(std::env::var("VN_SV_WAVS").expect("đặt VN_SV_WAVS"));
+        for (lang, file, phai_co) in [("ja", "ja.wav", "弁当制"), ("ko", "ko.wav", "훨씬 편할")] {
+            ensure_model(lang, &crate::runtime::im).expect("tải model");
+            assert!(ready(lang));
+            let (sr, mau) = wav_f32(thu_muc.join(file).to_str().unwrap());
+            let (rec, vad) = setup_sv(lang).unwrap();
+            let mut may = MaySense::moi(rec, vad, sr);
+            let nghe = std::cell::RefCell::new(Vec::<String>::new());
+            let f = |s: String| nghe.borrow_mut().push(s);
+            let t = Instant::now();
+            // Nạp từng mẩu 100ms như vòng lặp thật, rồi xả như lúc bấm dừng.
+            for m in mau.chunks(sr as usize / 10) {
+                may.nghe(&mut m.to_vec(), sr, &f).unwrap();
+            }
+            may.xa(&mut Vec::new(), sr, &f);
+            let giay = mau.len() as f32 / sr as f32;
+            let chu = nghe.borrow().join(" | ");
+            println!("{lang}: {giay:.1}s tiếng, chép {:.2}s -> {chu}", t.elapsed().as_secs_f32());
+            assert!(chu.contains(phai_co), "{lang}: nghe ra '{chu}'");
+        }
     }
 
     #[test]
@@ -1322,3 +1510,55 @@ mod tests {
     }
 }
 
+
+
+#[cfg(test)]
+mod do_tre {
+    use super::*;
+
+    /// Trễ từ lúc dứt tiếng tới lúc ra chữ, theo ĐỒNG HỒ GIẢ (số mẫu đã nạp) + thời gian giải mã
+    /// thật. Nạp từng mẩu 100ms như vòng lặp thật, sau file đệm 3s im lặng.
+    ///     VN_SV_WAVS=<thư mục> cargo test --release --lib asr::do_tre -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn do_tre_chot_cau() {
+        let thu_muc = PathBuf::from(std::env::var("VN_SV_WAVS").unwrap());
+        for (lang, file) in [("en", "en.wav"), ("ja", "ja.wav"), ("ko", "ko.wav")] {
+            let b = std::fs::read(thu_muc.join(file)).unwrap();
+            let (sr, pcm) = crate::wave_out::split_wav(&b).unwrap();
+            let mut mau: Vec<f32> =
+                pcm.chunks_exact(2).map(|c| f32::from(i16::from_le_bytes([c[0], c[1]])) / 32768.0).collect();
+            let het_tieng = mau.iter().rposition(|x| x.abs() > 0.02).unwrap() as f32 / sr as f32;
+            mau.extend(vec![0.0; sr as usize * 3]);
+            let mut nao: Box<dyn Nao> = if dung_sv(lang) {
+                let (rec, vad) = setup_sv(lang).unwrap();
+                Box::new(MaySense::moi(rec, vad, sr))
+            } else {
+                let d = dir();
+                let may = May { rec: setup(&d).unwrap(), punct: nap_dau_cau(&d) };
+                let st = mo_stream(&may.rec, sr);
+                Box::new(MayLocal { may, st })
+            };
+            let gio_gia = std::cell::Cell::new(0.0f32);
+            let ra_luc = std::cell::RefCell::new(Vec::<(f32, String)>::new());
+            let f = |s: String| ra_luc.borrow_mut().push((gio_gia.get(), s));
+            let mut giai_ma_max = 0.0f32;
+            for m in mau.chunks(sr as usize / 10) {
+                gio_gia.set(gio_gia.get() + m.len() as f32 / sr as f32);
+                let t = Instant::now();
+                nao.nghe(&mut m.to_vec(), sr, &f).unwrap();
+                giai_ma_max = giai_ma_max.max(t.elapsed().as_secs_f32());
+            }
+            let r = ra_luc.borrow();
+            let (cuoi, _) = r.last().expect("không ra chữ nào");
+            println!(
+                "{lang}: dứt tiếng {het_tieng:.2}s -> ra chữ cuối {cuoi:.2}s = trễ {:.2}s (+ giải mã lâu nhất {:.0}ms)",
+                cuoi - het_tieng,
+                giai_ma_max * 1000.0
+            );
+            for (t, s) in r.iter() {
+                println!("    {t:.1}s  {s}");
+            }
+        }
+    }
+}

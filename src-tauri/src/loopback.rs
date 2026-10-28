@@ -28,7 +28,7 @@
 //! vòng lặp tự-nghe-mình trở thành bất khả thi về mặt cấu trúc chứ không phải nhờ canh giờ.
 //!
 //! `cpal` không mở được đường này (nó chỉ biết thiết bị thật) nên phần bắt tiếng phải gọi
-//! WASAPI trực tiếp. Không thêm thư viện nào — crate `windows` vốn đã có sẵn cho OCR và TTS.
+//! WASAPI trực tiếp. Không thêm thư viện nào — crate `windows` vốn đã có sẵn cho TTS.
 //!
 //! Máy cũ hơn 20H1 thì [`mo`] trả `Err`, bên gọi tự lùi về cpal + bịt tai như cũ.
 

@@ -1,11 +1,7 @@
 mod asr;
-mod capture;
 mod config;
-mod dedup;
 mod loopback;
 mod narrator;
-mod ocr;
-mod oneocr;
 mod runtime;
 mod speech_queue;
 mod speechmatics;
@@ -18,18 +14,18 @@ mod wave_out;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
-use config::{Config, Region};
+use config::Config;
 use narrator::Narrator;
 
 thread_local! {
     static COM_INIT: Cell<bool> = const { Cell::new(false) };
 }
 
-/// WinRT (OCR/TTS) đòi thread đã khởi tạo COM. Gọi đầu mỗi thread chạm WinRT — MTA, không uninit
+/// WinRT (TTS) đòi thread đã khởi tạo COM. Gọi đầu mỗi thread chạm WinRT — MTA, không uninit
 /// (giữ apartment sống suốt đời thread; uninit sớm sẽ làm hỏng object đang cầm).
 pub(crate) fn ensure_com() {
     COM_INIT.with(|done| {
@@ -64,19 +60,6 @@ fn toggle(app: AppHandle, n: tauri::State<Narrator>) -> bool {
     bat_tat(&app, &n)
 }
 
-#[tauri::command]
-fn set_mode(n: tauri::State<Narrator>, mode: String) -> Config {
-    n.set_mode(&mode);
-    n.config()
-}
-
-/// engine: "oneocr" | "windows". Đổi xong worker dựng lại engine ở vòng lặp kế tiếp.
-#[tauri::command]
-fn set_engine(n: tauri::State<Narrator>, engine: String) -> Config {
-    n.set_engine(engine);
-    n.config()
-}
-
 /// engine: "google" | "llm". Ba field LLM chỉ dùng khi engine = "llm".
 #[tauri::command]
 fn set_translate(
@@ -88,18 +71,6 @@ fn set_translate(
     context_lines: usize,
 ) -> Config {
     n.set_translate(engine, base_url, model, api_key, context_lines);
-    n.config()
-}
-
-#[tauri::command]
-fn set_tuning(
-    n: tauri::State<Narrator>,
-    interval_ms: u64,
-    min_line_len: usize,
-    min_clean_ratio: f32,
-    fuzzy_threshold: f64,
-) -> Config {
-    n.set_tuning(interval_ms, min_line_len, min_clean_ratio, fuzzy_threshold);
     n.config()
 }
 
@@ -132,47 +103,49 @@ fn xin_cai(co: &'static AtomicBool) -> Option<KhoaCai> {
     (!co.swap(true, Ordering::SeqCst)).then(|| KhoaCai(co))
 }
 
-/// source: "screen" | "audio". Lần đầu chọn "audio" phải tải model ~198 MB — tải ở thread riêng
-/// như VieNeu. Đổi config trước, tải sau: chưa tải xong thì `narrator` vẫn chạy đường OCR.
-#[tauri::command]
-fn set_source(app: AppHandle, n: tauri::State<Narrator>, source: String) -> Config {
-    n.set_source(source.clone());
-    if source != "audio" || asr::ready() {
-        return n.config();
+/// Tải model nghe cho thứ tiếng `lang` ở thread riêng, báo tiến độ qua event — tải trong command
+/// thì UI đơ suốt mấy phút. Đã đủ, hoặc đang có luồng khác tải, thì thôi.
+fn tai_model(app: AppHandle, lang: String) {
+    if asr::ready(&lang) {
+        return;
     }
     let Some(khoa) = xin_cai(&DANG_CAI_ASR) else {
-        return n.config();
+        return;
     };
     std::thread::spawn(move || {
         let _khoa = khoa;
         let bao = |s: String| {
             let _ = app.emit("status", s);
         };
-        bao("Đang tải model nghe tiếng Anh (~198 MB, chỉ lần đầu)…".into());
-        match asr::ensure_model(&bao) {
-            Ok(()) => bao("Đã tải xong — bật công tắc để bắt đầu nghe".into()),
+        bao(format!(
+            "Đang tải model nghe {} (~{} MB, chỉ lần đầu)…",
+            translate::ten_tieng(&lang),
+            asr::mb_can_tai(&lang)
+        ));
+        match asr::ensure_model(&lang, &bao) {
+            Ok(()) => bao("Đã tải xong model nghe".into()),
             Err(e) => {
-                let _ = app.emit(
-                    "warn",
-                    format!("Không tải được model nghe: {e} — tạm đọc phụ đề trên màn hình"),
-                );
+                let _ = app.emit("warn", format!("Không tải được model nghe: {e}"));
             }
         }
     });
-    n.config()
 }
 
 /// engine: "local" | "speechmatics". Key để trong config của user, không hardcode.
+/// Chọn bản chạy máy cho một thứ tiếng chưa có model thì tải luôn ở nền.
 #[tauri::command]
-fn set_asr(n: tauri::State<Narrator>, engine: String, key: String, language: String) -> Config {
-    n.set_asr(engine, key, language);
+fn set_asr(app: AppHandle, n: tauri::State<Narrator>, engine: String, key: String, language: String) -> Config {
+    n.set_asr(engine.clone(), key, language.clone());
+    if engine == "local" {
+        tai_model(app, language);
+    }
     n.config()
 }
 
-/// Model nghe đã tải chưa — UI dùng để biết có phải báo "sẽ tải 198 MB" hay không.
+/// Model nghe thứ tiếng này đã tải chưa — UI dùng để biết có phải báo "sẽ tải" hay không.
 #[tauri::command]
-fn asr_ready() -> bool {
-    asr::ready()
+fn asr_ready(language: String) -> bool {
+    asr::ready(&language)
 }
 
 #[tauri::command]
@@ -268,56 +241,6 @@ fn set_captions(app: AppHandle, n: tauri::State<Narrator>, on: bool, movable: bo
     let _ = app.emit("captions_state", movable);
 }
 
-/// Mở overlay kéo chọn vùng. kind: "scan" (vùng quét) | "exclude" (vùng loại trừ).
-#[tauri::command]
-fn pick_region(app: AppHandle, kind: String) -> Result<(), String> {
-    let overlay = app
-        .get_webview_window("overlay")
-        .ok_or("không có cửa sổ overlay")?;
-    // Phủ đúng màn hình chính (giống overlay fullscreen của tkinter).
-    if let Ok(Some(m)) = app.primary_monitor() {
-        let _ = overlay.set_position(PhysicalPosition::new(m.position().x, m.position().y));
-        let _ = overlay.set_size(PhysicalSize::new(m.size().width, m.size().height));
-    }
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide(); // ẩn cửa sổ chính để chọn được vùng nằm dưới nó
-    }
-    overlay.show().map_err(|e| e.to_string())?;
-    let _ = overlay.set_always_on_top(true);
-    let _ = overlay.set_focus();
-    let _ = app.emit_to("overlay", "pick_start", kind);
-    Ok(())
-}
-
-/// Overlay gọi lại khi kéo xong (region = None nếu bấm Esc).
-/// Command này chạy từ cửa sổ overlay nên giá trị trả về KHÔNG tới được cửa sổ chính —
-/// phải emit "config" thì UI chính mới hiện vùng mới.
-#[tauri::command]
-fn region_picked(app: AppHandle, n: tauri::State<Narrator>, kind: String, region: Option<Region>) {
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        let _ = overlay.hide();
-    }
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.set_focus();
-    }
-    if let Some(r) = region {
-        if kind == "exclude" {
-            n.set_exclude(Some(r));
-        } else {
-            n.set_region(r);
-        }
-        let _ = app.emit("config", n.config());
-    }
-}
-
-/// Xoá vùng loại trừ (quét lại toàn khung).
-#[tauri::command]
-fn clear_exclude(n: tauri::State<Narrator>) -> Config {
-    n.set_exclude(None);
-    n.config()
-}
-
 fn emit_running(app: &AppHandle, on: bool) -> bool {
     let _ = app.emit("running", on);
     on
@@ -331,6 +254,11 @@ fn bat_tat(app: &AppHandle, n: &Narrator) -> bool {
         if let Err(e) = n.preflight() {
             let _ = app.emit("warn", e);
             return emit_running(app, false);
+        }
+        // Chưa có model thì vẫn bật: tải xong worker tự bắt đầu nghe, khỏi phải bấm lại.
+        let c = n.config();
+        if c.asr_engine == "local" {
+            tai_model(app.clone(), c.asr_language);
         }
     }
     emit_running(app, n.toggle())
@@ -380,7 +308,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Overlay luôn tồn tại (ẩn) nên đóng cửa sổ chính KHÔNG tự thoát app -> thoát tay.
+            // Cửa sổ phụ đề luôn tồn tại (ẩn) nên đóng cửa sổ chính KHÔNG tự thoát app -> thoát tay.
             if window.label() == "main" && matches!(event, WindowEvent::CloseRequested { .. }) {
                 window.app_handle().state::<Narrator>().shutdown();
                 window.app_handle().exit(0);
@@ -391,11 +319,7 @@ pub fn run() {
             list_voices,
             is_running,
             toggle,
-            set_mode,
-            set_engine,
             set_translate,
-            set_tuning,
-            set_source,
             asr_ready,
             set_asr,
             set_tts_engine,
@@ -404,10 +328,7 @@ pub fn run() {
             set_voice,
             set_speed,
             set_volume,
-            set_captions,
-            pick_region,
-            region_picked,
-            clear_exclude
+            set_captions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

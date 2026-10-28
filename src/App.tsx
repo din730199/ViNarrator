@@ -5,10 +5,7 @@ import {
   ASR_ENGINES,
   ASR_LANGS,
   Config,
-  ENGINES,
   LLM_PRESETS,
-  MODES,
-  SOURCES,
   Spoken,
   TTS_ENGINES,
   Voice,
@@ -49,7 +46,6 @@ export default function App() {
         setReady((x) => ({ ...x, vieneu: r })),
       );
       void invoke<string[]>('vieneu_voices').then(setVieneuVoices);
-      void invoke<boolean>('asr_ready').then((r) => setReady((x) => ({ ...x, audio: r })));
     };
     hoiReady();
     const un = [
@@ -63,7 +59,6 @@ export default function App() {
       // giữ 200 dòng gần nhất — log dài không giúp gì mà tốn RAM
       listen<Spoken>('text', (e) => setLog((l) => [...l, e.payload].slice(-200))),
       listen<boolean>('running', (e) => setRunning(e.payload)), // hotkey Ctrl+Alt+S đổi trạng thái
-      listen<Config>('config', (e) => setCfg(e.payload)), // overlay chọn xong vùng ở cửa sổ khác
     ];
     return () => {
       void Promise.all(un).then((fns) => fns.forEach((f) => f()));
@@ -73,6 +68,17 @@ export default function App() {
   useEffect(() => {
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
   }, [log]);
+
+  // Model nghe theo TỪNG thứ tiếng (Anh: zipformer, Nhật/Hàn/Trung: SenseVoice) -> hỏi lại khi
+  // đổi tiếng, và mỗi lần có "status" (tải xong cũng báo qua đó).
+  const lang = cfg?.asr_language;
+  useEffect(() => {
+    if (lang) {
+      void invoke<boolean>('asr_ready', { language: lang }).then((r) =>
+        setReady((x) => ({ ...x, audio: r })),
+      );
+    }
+  }, [lang, status]);
 
   // Tự kiểm tra bản mới lúc mở app. Im lặng khi offline / chưa có bản phát hành nào: lỗi ở đây
   // không đáng làm phiền người đang chơi game.
@@ -103,7 +109,6 @@ export default function App() {
 
   if (!cfg) return <div style={{ padding: 18 }}>{err || 'Đang tải…'}</div>;
 
-  const ex = cfg.exclude_region;
   const preset = LLM_PRESETS.find((p) => p.base_url === cfg.llm_base_url);
 
   // Gõ tới đâu chỉ đổi state tại chỗ; ghi config + dựng lại translator để lúc RỜI ô
@@ -117,12 +122,12 @@ export default function App() {
       contextLines: c.llm_context_lines,
     }).then(setCfg);
 
-  const saveTuning = (c: Config) =>
-    void invoke<Config>('set_tuning', {
-      intervalMs: c.interval_ms,
-      minLineLen: c.min_line_len,
-      minCleanRatio: c.min_clean_ratio,
-      fuzzyThreshold: c.fuzzy_threshold,
+  // Đổi tiếng hoặc cách nghe. Chọn bản chạy máy cho thứ tiếng chưa có model thì Rust tự tải ở nền.
+  const setAsr = (doi: { engine?: string; language?: string }) =>
+    void invoke<Config>('set_asr', {
+      engine: doi.engine ?? cfg.asr_engine,
+      key: cfg.speechmatics_key,
+      language: doi.language ?? cfg.asr_language,
     }).then(setCfg);
 
   const setCaptions = (on: boolean, movable: boolean) => {
@@ -151,44 +156,6 @@ export default function App() {
         </button>
       </div>
 
-      {/* Nghe tiếng thì không chụp màn hình -> vùng quét vô nghĩa, ẩn đi cho đỡ rối. */}
-      {cfg.source !== 'audio' && (
-      <div style={{ ...pad, display: 'flex', gap: 8, marginTop: 8 }}>
-        <button
-          className="secondary"
-          style={{ flex: 1 }}
-          onClick={() => void invoke('pick_region', { kind: 'scan' })}
-        >
-          Sửa vùng quét
-        </button>
-        <button
-          className="secondary"
-          style={{ flex: 1 }}
-          onClick={() => void invoke('pick_region', { kind: 'exclude' })}
-        >
-          Vùng loại trừ
-        </button>
-      </div>
-      )}
-
-      {cfg.source !== 'audio' && (
-      <div style={{ ...pad, fontSize: 12, color: '#8a8f9a', marginTop: 6 }}>
-        Vùng quét: {cfg.region.width}×{cfg.region.height} tại ({cfg.region.left},{cfg.region.top})
-        {ex && (
-          <>
-            {' · loại trừ '}
-            {ex.width}×{ex.height}{' '}
-            <button
-              className="ghost small"
-              onClick={() => void invoke<Config>('clear_exclude').then(setCfg)}
-            >
-              xoá
-            </button>
-          </>
-        )}
-      </div>
-      )}
-
       <div style={{ ...pad, marginTop: 10 }}>
         <label className="check">
           <input
@@ -206,11 +173,12 @@ export default function App() {
                 checked={cfg.captions_movable}
                 onChange={(e) => setCaptions(cfg.captions, e.target.checked)}
               />
-              Cho phép kéo để dời vị trí
+              Kéo dời vị trí, lăn chuột xem lại
             </label>
             <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 0' }}>
-              Tắt mục kéo khi đã đặt xong để chuột xuyên qua vào game. Game cần chạy chế độ cửa sổ
-              hoặc toàn màn hình không viền, toàn màn hình độc quyền sẽ che mất phụ đề.
+              Bật để kéo khung phụ đề hoặc lăn chuột xem lại 50 câu gần nhất. Tắt khi chơi để chuột
+              xuyên qua vào game. Game cần chạy chế độ cửa sổ hoặc toàn màn hình không viền, toàn
+              màn hình độc quyền sẽ che mất phụ đề.
             </div>
           </>
         )}
@@ -219,120 +187,45 @@ export default function App() {
       {/* minHeight:0 + overflow => mở khối AI ra thì phần này tự cuộn, không đẩy log ra
           ngoài cửa sổ (flex item mặc định không co xuống dưới kích thước nội dung). */}
       <div style={{ ...pad, overflowY: 'auto', minHeight: 0 }}>
-        <label>Chế độ</label>
-        <select
-          value={cfg.mode}
-          onChange={(e) => void invoke<Config>('set_mode', { mode: e.target.value }).then(setCfg)}
-        >
-          {MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-
-        <label>Lấy lời thoại từ</label>
-        <select
-          value={cfg.source}
-          onChange={(e) => {
-            const source = e.target.value;
-            // Lần đầu chọn Âm thanh sẽ tải model ở nền — báo ngay để không tưởng app treo.
-            if (source === 'audio' && !ready.audio) setStatus('Đang tải model nghe…');
-            void invoke<Config>('set_source', { source }).then(setCfg);
-          }}
-        >
-          {SOURCES.map((s) => (
-            <option key={s.value} value={s.value}>
-              {s.label}
+        <label>Tiếng trong game</label>
+        <select value={cfg.asr_language} onChange={(e) => setAsr({ language: e.target.value })}>
+          {ASR_LANGS.map((l) => (
+            <option key={l.value} value={l.value}>
+              {l.label}
             </option>
           ))}
         </select>
         <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 6px' }}>
-          {SOURCES.find((s) => s.value === cfg.source)?.ghi_chu}
-          {cfg.source === 'audio' && (ready.audio ? ' · đã tải' : ' · SẼ TẢI khi chọn')}
+          Dịch sang tiếng Việt rồi đọc lên.
         </div>
-        {cfg.source === 'audio' && (
-          <>
-            <label>Nghe bằng</label>
-            <select
-              value={cfg.asr_engine}
-              onChange={(e) =>
-                void invoke<Config>('set_asr', {
-                  engine: e.target.value,
-                  key: cfg.speechmatics_key,
-                  language: cfg.asr_language,
-                }).then(setCfg)
-              }
-            >
-              {ASR_ENGINES.map((a) => (
-                <option key={a.value} value={a.value}>
-                  {a.label}
-                </option>
-              ))}
-            </select>
-            <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 6px' }}>
-              {ASR_ENGINES.find((a) => a.value === cfg.asr_engine)?.ghi_chu}
-              {cfg.asr_engine === 'local' && (ready.audio ? ' · đã tải' : ' · SẼ TẢI khi chọn')}
-            </div>
 
-            {cfg.asr_engine === 'speechmatics' ? (
-              <>
-                <label>API key Speechmatics</label>
-                <input
-                  type="password"
-                  value={cfg.speechmatics_key}
-                  placeholder="lấy ở portal.speechmatics.com"
-                  onChange={(e) => setCfg({ ...cfg, speechmatics_key: e.target.value })}
-                  // Chỉ gửi khi rời ô: gửi theo từng phím sẽ dựng lại kết nối ở mỗi ký tự.
-                  onBlur={() =>
-                    void invoke<Config>('set_asr', {
-                      engine: cfg.asr_engine,
-                      key: cfg.speechmatics_key,
-                      language: cfg.asr_language,
-                    }).then(setCfg)
-                  }
-                />
-                <label>Tiếng trong game</label>
-                <select
-                  value={cfg.asr_language}
-                  onChange={(e) =>
-                    void invoke<Config>('set_asr', {
-                      engine: cfg.asr_engine,
-                      key: cfg.speechmatics_key,
-                      language: e.target.value,
-                    }).then(setCfg)
-                  }
-                >
-                  {ASR_LANGS.map((l) => (
-                    <option key={l.value} value={l.value}>
-                      {l.label}
-                    </option>
-                  ))}
-                </select>
-              </>
-            ) : (
-              // Model chạy máy chỉ biết tiếng Anh. Không cảnh báo thì người dùng chọn chế độ
-              // Trung rồi ngồi chờ mãi không thấy đọc gì mà app chẳng báo lỗi gì cả.
-              null
-            )}
-          </>
-        )}
+        <label>Nghe bằng</label>
+        <select value={cfg.asr_engine} onChange={(e) => setAsr({ engine: e.target.value })}>
+          {ASR_ENGINES.map((a) => (
+            <option key={a.value} value={a.value}>
+              {a.label}
+            </option>
+          ))}
+        </select>
+        <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 6px' }}>
+          {ASR_ENGINES.find((a) => a.value === cfg.asr_engine)?.ghi_chu}
+          {cfg.asr_engine === 'local' &&
+            (ready.audio
+              ? ' · đã tải'
+              : ` · sẽ tải ${cfg.asr_language === 'en' ? '198' : '240'} MB khi bật`)}
+        </div>
 
-        {cfg.source !== 'audio' && (
+        {cfg.asr_engine === 'speechmatics' && (
           <>
-            <label>Engine OCR</label>
-            <select
-              value={cfg.ocr_engine}
-              onChange={(e) =>
-                void invoke<Config>('set_engine', { engine: e.target.value }).then(setCfg)
-              }
-            >
-              {ENGINES.map((e) => (
-                <option key={e.value} value={e.value}>
-                  {e.label}
-                </option>
-              ))}
-            </select>
+            <label>API key Speechmatics</label>
+            <input
+              type="password"
+              value={cfg.speechmatics_key}
+              placeholder="lấy ở portal.speechmatics.com"
+              onChange={(e) => setCfg({ ...cfg, speechmatics_key: e.target.value })}
+              // Chỉ gửi khi rời ô: gửi theo từng phím sẽ dựng lại kết nối ở mỗi ký tự.
+              onBlur={() => setAsr({})}
+            />
           </>
         )}
 
@@ -413,69 +306,6 @@ export default function App() {
             </div>
           </div>
         )}
-
-        <details style={{ marginTop: 12 }}>
-          <summary>
-            Tinh chỉnh bắt chữ
-          </summary>
-
-          <label>Nhịp quét &nbsp; {cfg.interval_ms} ms</label>
-          <input
-            type="range"
-            min={300}
-            max={3000}
-            step={100}
-            value={cfg.interval_ms}
-            onChange={(e) => setCfg({ ...cfg, interval_ms: Number(e.target.value) })}
-            onMouseUp={() => saveTuning(cfg)}
-            onKeyUp={() => saveTuning(cfg)}
-          />
-
-          <label>Độ dài dòng tối thiểu &nbsp; {cfg.min_line_len} ký tự</label>
-          <input
-            type="range"
-            min={1}
-            max={12}
-            value={cfg.min_line_len}
-            onChange={(e) => setCfg({ ...cfg, min_line_len: Number(e.target.value) })}
-            onMouseUp={() => saveTuning(cfg)}
-            onKeyUp={() => saveTuning(cfg)}
-          />
-
-          <label>
-            Lọc chữ rác &nbsp;
-            {cfg.min_clean_ratio === 0 ? 'tắt' : cfg.min_clean_ratio.toFixed(2)}
-          </label>
-          <input
-            type="range"
-            min={0}
-            max={0.95}
-            step={0.05}
-            value={cfg.min_clean_ratio}
-            onChange={(e) => setCfg({ ...cfg, min_clean_ratio: Number(e.target.value) })}
-            onMouseUp={() => saveTuning(cfg)}
-            onKeyUp={() => saveTuning(cfg)}
-          />
-          <div style={{ fontSize: 12, color: '#8a8f9a', margin: '2px 0 6px' }}>
-            Nâng lên nếu còn nghe đọc chữ bịa; hạ xuống nếu câu thật bị bỏ oan.
-          </div>
-
-          <label>Chống đọc trùng &nbsp; {cfg.fuzzy_threshold.toFixed(2)}</label>
-          <input
-            type="range"
-            min={0.5}
-            max={1}
-            step={0.01}
-            value={cfg.fuzzy_threshold}
-            onChange={(e) => setCfg({ ...cfg, fuzzy_threshold: Number(e.target.value) })}
-            onMouseUp={() => saveTuning(cfg)}
-            onKeyUp={() => saveTuning(cfg)}
-          />
-          <div style={{ fontSize: 12, color: '#8a8f9a', marginBottom: 4 }}>
-            Hai dòng giống nhau tới mức này thì bỏ dòng sau. Hạ xuống sẽ nuốt mất câu thoại chỉ
-            khác một từ — đo được 0.82 nuốt 8/8 cặp như vậy.
-          </div>
-        </details>
 
         <hr className="sep" />
 
@@ -581,7 +411,7 @@ export default function App() {
         )}
         {log.map((l, i) => (
           <div key={i} className="cue">
-            {/* bản gốc mờ ở trên: nghe sai thì nhìn là biết lỗi ở OCR hay ở khâu dịch */}
+            {/* bản gốc mờ ở trên: nhìn là biết lỗi do nghe sai hay do dịch sai */}
             {l.src !== l.out && <div className="src">{l.src}</div>}
             <div className="out">{l.out}</div>
           </div>

@@ -1,6 +1,6 @@
 [package]
 name = "vinarrator"
-version = "0.1.4"
+version = "0.1.5"
 description = "ViNarrator — thuyết minh game tiếng Việt"
 authors = ["ViNarrator"]
 edition = "2021"
@@ -22,22 +22,14 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
-# difflib.SequenceMatcher của Python -> normalized_levenshtein (khác metric, xem dedup.rs).
-strsim = "0.11"
-# Chụp vùng màn hình (thay mss). Trả RgbaImage — OneOCR dùng thẳng, Windows OCR tự đảo kênh.
-xcap = "0.9"
-# OneOCR: engine của Snipping Tool Win11. Chính xác hơn Windows.Media.Ocr ở ảnh khó
-# (đo 6 mẫu khó: 0.991 vs 0.625). Không kèm dll/model — chép từ máy người dùng lúc chạy.
-oneocr-rs = "0.3"
-image = "0.25"
-# Dịch EN/ZH -> VI: endpoint Google + API LLM OpenAI-compatible. blocking: gọi từ worker thread thường.
+# Dịch -> VI: endpoint Google + API LLM OpenAI-compatible. blocking: gọi từ worker thread thường.
 reqwest = { version = "0.12", default-features = false, features = [
   "blocking",
   "json",
   "rustls-tls",
 ] }
 urlencoding = "2"
-# Nguồn "âm thanh": bắt loopback (thiết bị PHÁT mở ở chế độ input) rồi nhận dạng tại chỗ.
+# Bắt loopback (thiết bị PHÁT mở ở chế độ input) rồi nhận dạng tại chỗ.
 # sherpa-onnx tự tải thư viện native prebuilt lúc build và link TĨNH — không cần cmake/libclang
 # (đúng thứ đã làm piper-rs build hỏng), đổi lại exe to thêm ~20 MB.
 cpal = "0.15"
@@ -49,23 +41,15 @@ tungstenite = { version = "0.24", default-features = false, features = [
   "rustls-tls-webpki-roots",
 ] }
 
-# Windows-only: OCR + TTS đều là WinRT nên app này chỉ chạy Windows (khai ở [dependencies] cho đúng).
+# Windows-only: TTS là WinRT nên app này chỉ chạy Windows (khai ở [dependencies] cho đúng).
 # Media_Core: cần cho SynthesizeTextToStreamAsync. Win32_Media_Audio: PlaySoundW (thay winsound).
 # Macro `implement` (loopback.rs dựng một đối tượng COM) sinh code trỏ thẳng vào `windows_core`,
 # nên crate đó phải có tên ở đây chứ không mượn qua `windows::core` được.
 windows-core = "0.62"
 windows = { version = "0.62", features = [
-  # ApplicationModel + Management_Deployment: hỏi vị trí gói Snipping Tool. Bắt buộc phải qua
-  # PackageManager vì user thường KHÔNG liệt kê được C:\Program Files\WindowsApps (Access denied).
-  "ApplicationModel",
-  "Management_Deployment",
   "Foundation",
-  "Globalization",
-  "Graphics_Imaging",
   "Media_Core",
-  "Media_Ocr",
   "Media_SpeechSynthesis",
-  "Security_Cryptography",
   "Storage_Streams",
   "Win32_Media_Audio",
   "Win32_System_Com",
@@ -79,4 +63,7 @@ windows = { version = "0.62", features = [
   "Win32_System_Threading",
   # CreateEventW cần SECURITY_ATTRIBUTES -> phải bật kèm Win32_Security (xem wave_out.rs).
   "Win32_Security",
+  # GetDiskFreeSpaceExW: kiểm đủ chỗ trước khi tải model (xem runtime.rs). Trước được bật ké
+  # qua thư viện OCR, gỡ OCR là mất.
+  "Win32_Storage_FileSystem",
 ] }

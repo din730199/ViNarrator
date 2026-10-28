@@ -1,6 +1,7 @@
 ﻿# ViNarrator — Thuyết minh game tiếng Việt (Tauri + React + Rust)
 
-Chụp một vùng màn hình → OCR → dịch sang tiếng Việt → **đọc thành tiếng**.
+Nghe thoại game (tiếng Anh, Nhật, Hàn, Trung) → dịch sang tiếng Việt → **đọc thành tiếng**, kèm
+phụ đề nổi trong game nếu muốn.
 Đóng gói thành **một file installer** (NSIS), không cần Python/venv. Cài xong chạy được ngay;
 giọng neural VieNeu là tuỳ chọn, bật thì mới cài thêm.
 
@@ -23,7 +24,7 @@ yarn install
 yarn dev      # cargo tauri dev
 yarn build    # cargo tauri build -> <target>/release/bundle/nsis/*-setup.exe
               # <target> = %CARGO_TARGET_DIR% nếu đã set, mặc định src-tauri/target
-yarn test     # cargo test (52 unit test)
+yarn test     # cargo test (54 unit test)
 ```
 
 Installer ~3,4 MB, exe ~13,6 MB — giọng neural tải riêng khi bật, không nhét vào installer.
@@ -36,44 +37,34 @@ cargo test --lib -- --ignored --nocapture --test-threads=1
 
 ## Dùng
 
-- **BẮT ĐẦU ĐỌC / DỪNG ĐỌC** — hoặc phím tắt toàn cục **Ctrl+Alt+S**. **Ctrl+Alt+R** đọc lại câu cuối.
-- **SỬA VÙNG QUÉT** — kéo chuột chọn vùng phụ đề/thoại (overlay phủ màn hình chính).
-- **VÙNG LOẠI TRỪ** — kéo chọn vùng con bỏ qua (HUD/logo) trong khung quét; nút *xoá* để bỏ.
-- **CHẾ ĐỘ** — Anh→Việt hoặc Trung→Việt.
-- **CÁCH DỊCH** — Google Dịch hoặc AI (xem dưới).
-- **GIỌNG ĐỌC** — giọng Windows hoặc VieNeu (xem dưới) — **/ ÂM LƯỢNG / TỐC ĐỘ**.
+- **Bắt đầu đọc / Dừng đọc** — hoặc phím tắt toàn cục **Ctrl+Alt+S**. **Ctrl+Alt+R** đọc lại câu cuối.
+- **Tiếng trong game** — Anh, Nhật, Hàn hoặc Trung. Đích luôn là tiếng Việt.
+- **Nghe bằng** — chạy trên máy hoặc Speechmatics (xem *Nghe tiếng game*).
+- **Phụ đề nổi trong game** — khung phụ đề trong suốt luôn nằm trên game, hiện 3 câu gần nhất (câu mới nhất to và sáng nhất), chuột xuyên qua. Bật *Kéo dời vị trí, lăn chuột xem lại* để kéo khung hoặc lăn chuột xem lại 50 câu; tắt khi chơi.
+- **Cách dịch** — Google Dịch hoặc AI (xem dưới).
+- **Giọng đọc** — giọng Windows hoặc VieNeu (xem dưới) — **/ Âm lượng / Tốc độ**.
 
-Cấu hình lưu ở `%APPDATA%\ViNarrator\config.json` (giữ nguyên tên field của bản Python
-nên `config.json` cũ copy sang vẫn đọc được).
-
-### Engine OCR
-
-Chọn trong giao diện (**ENGINE OCR**), đo bằng độ giống ground truth (0–1):
-
-| | 8 mẫu dễ | 6 mẫu khó¹ | 3 mẫu tiếng Việt | ms/khung |
-|---|---|---|---|---|
-| **OneOCR** (mặc định) | 1.000 | **0.991** | **0.881** | ~70 |
-| Windows OCR | 1.000 | 0.625 | 0.702 | ~20 |
-
-¹ chữ 9px trên nhiễu, tương phản cực thấp, font nghiêng serif, nền tần số cao, chữ mờ trên nền sáng.
-
-**OneOCR** là engine của Snipping Tool Win11. Ba file `oneocr.dll`, `oneocr.onemodel`,
-`onnxruntime.dll` (~110 MB) thuộc Microsoft nên **không** đóng gói kèm — app tự chép từ gói
-Snipping Tool trên máy vào cạnh exe ở lần chạy đầu (mất ~0.2s). Máy không có Snipping Tool
-hoặc chạy Win10 → tự lùi về Windows OCR, lý do hiện ở thanh trạng thái.
-
-Hai chi tiết kỹ thuật đáng nhớ:
-- `build.rs` ép `/DELAYLOAD:oneocr.dll`. Không có nó, import tĩnh của `oneocr-rs` làm app chết
-  ngay lúc nạp (`STATUS_DLL_NOT_FOUND`) trước khi kịp chạy code chép file.
-- Phải hỏi vị trí gói qua WinRT `PackageManager`; user thường **không** liệt kê được
-  `C:\Program Files\WindowsApps` (Access denied), dù đọc file theo đường dẫn chính xác thì được.
-- `installMode` để `currentUser` (cài vào `%LOCALAPPDATA%`) nên chép file không cần quyền admin.
-  Đổi sang `perMachine` sẽ làm OneOCR không dùng được.
+Cấu hình lưu ở `%APPDATA%\ViNarrator\config.json`. Config của bản có OCR vẫn đọc được: các
+field cũ (`region`, `mode`, `source`…) bị bỏ qua.
 
 ### Cách dịch
 
-Mặc định là **Google Dịch** (endpoint web `client=gtx`, không cần key, ~150ms). Dịch từng câu
-rời rạc nên hay sai xưng hô — "you" lúc thì *bạn*, lúc thì *mày*.
+Mặc định là **Google Dịch** (endpoint web `client=gtx`, không cần key, ~150ms). Ba thứ để bù
+cho việc Google vốn dịch từng câu rời:
+
+- **Gửi kèm câu trước** (nếu nghe được trong 30s gần nhất), cách một dòng, rồi chỉ lấy phần dịch
+  của câu hiện tại. Phải cắt theo dấu xuống dòng chứ không theo đoạn: tiếng Anh Google trả hai
+  đoạn, còn Nhật/Hàn/Trung nó dịch vòng qua tiếng Anh nên trả **một đoạn** có `\n` ở giữa.
+- **Nhớ 500 câu đã dịch.** Game lặp thoại liên tục; câu đã gặp thì lấy lại ngay, không gọi mạng,
+  đỡ bị chặn 429.
+- **Bắt bản dịch vẫn là nguyên văn rồi thử lại.** Google thỉnh thoảng trả lại câu gốc (cả câu
+  hoặc một nửa — bắt được một lần: `5十円の学校販売のパンを買う.`). Còn hơn 1/3 chữ là chữ
+  Nhật/Hàn/Trung thì thử lại tối đa 3 lần; vẫn hỏng thì đọc nguyên văn và báo lên giao diện.
+  Không xét "trùng câu gốc": tên riêng (`Shepard.`), tiếng cười (`Ha ha ha.`) Google trả y nguyên
+  là đúng — xét thì mỗi câu như vậy chậm thêm ~1,4s vì thử lại.
+
+Ngôn ngữ nguồn lấy theo **Tiếng trong game**. Bản trước lấy theo chế độ OCR (Anh/Trung), nên
+nghe tiếng Nhật qua Speechmatics vẫn báo Google là tiếng Anh và nhận về nguyên văn.
 
 Chọn **AI** trong mục *CÁCH DỊCH* thì mỗi câu được gửi kèm vài câu trước làm ngữ cảnh, model
 tự chọn xưng hô nhất quán và hiểu thuật ngữ game. Kéo thanh **NGỮ CẢNH** về 0 để tắt phần này
@@ -89,7 +80,7 @@ Hạn mức free tier tra 8/2026:
 | Gemini | 15/phút · **1.000/ngày** | ~500–900ms | dịch mượt nhất, nhưng hết quota sau ~1 giờ chơi |
 | OpenRouter | model `:free` ~50/ngày | chậm, hay 429 | chỉ để thử |
 
-ViNarrator quét 1,2s/lần, dedup lọc còn ~10–30 câu mới/phút — chỉ Groq chịu nổi liên tục.
+Thoại game ra cỡ ~10–30 câu/phút — chỉ Groq chịu nổi liên tục.
 
 Hỏng ở đâu cũng **không** làm gián đoạn giọng đọc: thiếu key / lỗi mạng / model trả lời dài
 bất thường → tự lùi về Google Dịch; Google lỗi nữa → đọc nguyên văn. Dính **429 thì nghỉ hẳn
@@ -103,95 +94,39 @@ Mỗi lần đổi tình trạng chỉ báo một lần, không spam từng câu
 API key lưu **thô** trong `%APPDATA%\ViNarrator\config.json` (`llm_api_key`) — app cá nhân,
 không hardcode và không đóng gói kèm, nhưng đừng share file config đó.
 
-### Chỉnh độ chính xác OCR
-
-Ba knob đầu chỉnh ngay trong giao diện (**TINH CHỈNH BẮT CHỮ**), phần còn lại sửa trong `config.json`:
-
-| Field | Mặc định | Ý nghĩa |
-|---|---|---|
-| `min_clean_ratio` | `0.6` | Bỏ dòng có điểm "sạch" chuẩn hoá dưới ngưỡng — chặn chữ OCR bịa. Nâng nếu còn nghe đọc rác, hạ (hoặc `0` để tắt) nếu câu thật bị bỏ oan. |
-| `min_line_len` | `3` | Bỏ dòng ngắn hơn ngần này ký tự. Đừng lên 4: `Yes`, `No!`, `Go!`, `Run` đều đúng 3 ký tự. |
-| `interval_ms` | `700` | Nhịp quét. Đừng nâng cao: nhân với `dedup_require_stable` thành thời gian phụ đề phải đứng yên mới bắt được. |
-| `fuzzy_threshold` | `0.97` | Hai dòng giống nhau tới mức này thì bỏ dòng sau. **Đo được**, xem dưới. |
-| `min_height_ratio` | `0.6` | Bỏ dòng thấp hơn `tỉ lệ × dòng cao nhất` trong khung. Cắt chữ nhỏ của giao diện (thanh tua, tiêu đề video). Đặt `0` để tắt. Áp cho cả hai engine. |
-| `binarize_threshold` | `150` | Chỉ dùng cho Windows OCR: ngưỡng cho lượt OCR nhị phân hoá (`max(R,G,B) ≥ ngưỡng` = chữ). Hạ xuống nếu phụ đề mờ/xám; nâng lên nếu nền sáng bị nhận nhầm. |
-
-**Lọc chữ rác** cho mỗi ký tự một điểm rồi lấy trung bình: chữ/số/khoảng trắng `+1`, ký tự lạ
-`-3`, chữ có dấu **khi nguồn là tiếng Anh** `-6` (dấu tiếng Việt lọt vào khung tiếng Anh gần như
-chắc chắn là OCR bịa). Dấu câu thường bị loại khỏi cả tử lẫn mẫu, nếu không `Hmm...` sẽ thành rác.
-Đo thật: `' oanqCảaTôi Phả Server Minecraft Bi Bo H` được 0.50, câu đọc đúng được 1.00.
-Chế độ Trung tắt luật chữ có dấu vì chữ Hán vốn ngoài ASCII.
-
-**Nhịp quét nhân đôi thành độ trễ.** `dedup_require_stable` bắt một dòng phải xuất hiện ở **hai
-khung liên tiếp** mới được đọc (tránh đọc nửa câu đang hiện dần), nên phụ đề phải đứng yên
-**1–2 lần `interval_ms`**; chớp nhanh hơn là mất trắng. Nhịp 1200 của bản Python đòi tới 2,4s —
-quá lâu cho thoại game. Đo chi phí thật mỗi khung: **OneOCR 73ms, Windows OCR 16ms** (2 lượt),
-nên ở nhịp 700ms chỉ tốn ~10% một nhân. Hạ xuống là gần như miễn phí.
-
-Hai luật lọc dòng ngắn **chồng lấn nhau**, biết ranh giới thì đỡ chỉnh nhầm: `min_clean_ratio` đã dọn sạch
-rác dấu câu (`.` `-` `|` `'` `..` `•`), nên việc còn lại của `min_line_len` chỉ là mảnh **chữ cái**
-1–2 ký tự (`o`, `ll`, `at`, `l1`). Vì vậy `3` là trần hợp lý — lên `4` là bắt đầu nuốt thoại thật.
-
-Log hiện **cả bản gốc (mờ) lẫn bản dịch** — nghe sai thì nhìn là biết lỗi ở OCR hay ở khâu dịch.
-
-### Ngưỡng chống đọc trùng — đo, không đoán
-
-`fuzzy_threshold` từng là `0.82`, thừa hưởng từ bản Python dùng `difflib.SequenceMatcher`
-(Ratcliff-Obershelp) rồi bê nguyên sang bản Rust dùng `normalized_levenshtein` — **hai metric
-khác nhau, chưa hề đo lại**.
-
-Đo trên 60 ảnh phụ đề xuống cấp (10 câu × 6 kiểu: chữ 9px trên nhiễu, tương phản cực thấp,
-serif nghiêng, nền tần số cao, chữ mờ trên nền sáng), chạy qua `LineDeduper` thật:
-
-| ngưỡng | đọc lặp (OneOCR) | mất câu thoại¹ |
-|---|---|---|
-| 0.82 (cũ) | 0 | **8/8** |
-| 0.92 | 0 | 5/8 |
-| 0.95 | 0 | 3/8 |
-| **0.97 (nay)** | 1 | **0/8** |
-
-¹ cặp thoại chỉ khác một từ — `"...touch that lever"` vs `"...that button"` (0.829),
-`"more iron"` vs `"more gold"` (0.905), `"forty hours"` vs `"fifty hours"` (0.953).
-
-Tức là ngưỡng cũ **sai theo chiều ngược với dự đoán**: không phải quá lỏng mà quá **gắt** —
-nó nuốt sạch thoại gần giống nhau. Đổi lại chỉ được 0 lần đọc lặp.
-
-Giới hạn thật của cách này: OCR đọc lệch giữa câu (`hits`→`bits`, 0.951) và thoại khác một từ
-(`base`→`gate`, 0.950) **có điểm gần như nhau — không metric nào tách được**. Nên chọn ngưỡng
-nghiêng về phía ĐỌC: nghe lặp một câu thì bực, mất một câu thì không lấy lại được.
-
-`config.json` cũ ghi đúng `0.82` sẽ tự nâng lên khi nạp; ai tự chỉnh số khác thì giữ nguyên.
-
-Nhánh Windows OCR chạy **hai lượt** — ảnh gốc và ảnh nhị phân hoá — rồi lấy bản ít ký tự rác hơn:
-chỉ ảnh gốc đạt trung bình 0.922 / tệ nhất 0.375 trên 8 mẫu dễ, hai lượt đạt 1.000 cả 8.
-OneOCR không cần trò này.
-
-Confidence của OneOCR **không** dùng để lọc rác được: chữ nhỏ của giao diện cũng được đọc đúng
-(~0.99) trong khi tiếng Việt đọc đúng lại chỉ 0.72 — hai dải chồng nhau. Lọc theo chiều cao dòng
-mới là cái phân biệt được.
-
-## Lấy lời thoại từ đâu
-
-Chọn trong giao diện (**LẤY LỜI THOẠI TỪ**):
-
-| Nguồn | Cần gì | Hợp với |
-|---|---|---|
-| **Màn hình** (mặc định) | 0 MB, chọn vùng phụ đề | game có phụ đề rõ |
-| **Âm thanh** | tải 355 MB (chạy máy) hoặc API key (Speechmatics) | game không có phụ đề, hoặc phụ đề nằm ngoài vùng quét |
-
-Nguồn âm thanh có hai bộ não:
+## Nghe tiếng game
 
 | Nghe bằng | Cần gì | Đánh đổi |
 |---|---|---|
-| **Chạy trên máy** (mặc định) | tải 198 MB | miễn phí, không cần mạng, **không gửi gì ra ngoài** · **chỉ tiếng Anh** · ~5,5% một nhân |
-| **Speechmatics** | API key | nghe chuẩn hơn khi nhạc nền to, nhiều thứ tiếng, chữ trả về có sẵn dấu câu · **lời thoại được gửi lên máy chủ của họ** |
+| **Chạy trên máy** (mặc định) | tải 198 MB (Anh) hoặc 240 MB (Nhật/Hàn/Trung), lần đầu bấm bắt đầu | miễn phí, không cần mạng, **không gửi gì ra ngoài** · ~5,5% một nhân |
+| **Speechmatics** | API key | nghe chuẩn hơn khi nhạc nền to, chữ trả về có sẵn dấu câu · **lời thoại được gửi lên máy chủ của họ** |
+
+Bản chạy máy dùng **hai model tuỳ thứ tiếng**:
+
+| Tiếng | Model | Kiểu |
+|---|---|---|
+| Anh | sherpa-onnx streaming zipformer `en-2023-06-21` + model dấu câu | streaming, chốt câu sau 0,8s im lặng |
+| Nhật, Hàn, Trung | SenseVoice-small int8 `2024-07-17` + VAD silero | VAD cắt quãng nói (chốt sau 0,5s im lặng), chép cả quãng (2 luồng); tự có dấu câu |
+
+SenseVoice đo trên file mẫu của chính nó, đi qua đúng đường chạy thật (khung 512 mẫu, VAD):
+
+| | Nghe ra | Chép mất |
+|---|---|---|
+| `ja.wav` 7,2s | うちの中学は弁当制で持っていけない場合は五十円の学校販売のパンを買う。 | 0,38s |
+| `ko.wav` 4,6s | 조 금만 생각 을 하 면서 살 면 훨씬 편할 거야. | 0,21s |
+
+RAM đỉnh ~323 MB. Tiếng Hàn bị chen khoảng trắng giữa âm tiết (cách model tách token); Google vẫn
+dịch đúng ý (`Sẽ dễ dàng hơn nhiều nếu bạn chỉ nghĩ về nó một chút.`).
+
+**Đừng đổi sang `sense-voice-…-int8-2025-09-09`** dù tên giống và mới hơn: đó là bản tinh chỉnh
+tiếng Quảng Đông (WSYue-ASR). Đã thử — tiếng Nhật ra toàn chữ Hán, không kana, không dấu câu,
+dù ép `language` là `ja`.
 
 Bản Speechmatics dùng WebSocket **đồng bộ** (`tungstenite`), không kéo tokio: khâu nghe vốn đã
 chạy trong thread riêng nên thêm cả một runtime async chỉ để phục vụ một socket là thừa.
 
-Nguồn âm thanh nghe **loopback** (mọi thứ đang phát ra loa) rồi nhận dạng tại chỗ bằng
-sherpa-onnx streaming zipformer `en-2023-06-21` — offline, không key, không quota. Câu nghe được
-đi vào đúng đường dịch + đọc của nguồn màn hình.
+App nghe **loopback** (mọi thứ đang phát ra loa) rồi nhận dạng tại chỗ — offline, không key,
+không quota.
 
 **Vì sao model chỉ-tiếng-Anh chứ không phải bản đa ngữ.** Đo trên hai file mẫu của sherpa, cùng
 cấu hình, chỉ đổi model:
@@ -202,10 +137,9 @@ cấu hình, chỉ đổi model:
 | CPU | RTF 0,113 | **RTF 0,055** |
 | Tải | 339 MB | **190 MB** |
 
-Bản đa ngữ nuốt hẳn vế `as a direct consequence of the sin which man thus punished had` — nó đổi
+Đây là lý do tiếng Anh không dùng chung SenseVoice. Bản đa ngữ nuốt hẳn vế `as a direct consequence of the sin which man thus punished had` — nó đổi
 độ chính xác tiếng Anh lấy khả năng đa ngôn ngữ. Bản EN train trên **LibriSpeech + GigaSpeech**;
-GigaSpeech là podcast/YouTube, gần tiếng game hơn hẳn sách nói thu phòng thu. Muốn nghe tiếng
-Trung/Nhật bằng nguồn âm thanh thì dùng Speechmatics, hoặc dùng nguồn màn hình.
+GigaSpeech là podcast/YouTube, gần tiếng game hơn hẳn sách nói thu phòng thu.
 
 ### Ba khâu nối tiếp, thiếu một là hỏng
 
@@ -218,8 +152,8 @@ nên thực tế bắt được `But` rồi `Me to get away from the information
 `I` rồi `Think it do it…`. Dịch riêng từng mẩu thì mẩu đầu ra "Nhưng" cụt lủn, mẩu sau mất chủ
 ngữ. Gom lại rồi mới cắt theo dấu câu thật là về đúng một câu.
 
-**Giá CPU: RTF 0,055 — khoảng 5,5% một nhân.** Đây là con số phải đo trước khi làm, vì khác OCR
-(chạy 16–73 ms mỗi 700 ms, có nghỉ), nhận dạng streaming phải nuốt 100% âm thanh liên tục.
+**Giá CPU: RTF 0,055 — khoảng 5,5% một nhân.** Đây là con số phải đo trước khi làm, vì nhận
+dạng phải nuốt 100% âm thanh liên tục.
 
 ### App tự nghe chính nó — và vì sao bịt tai là sai
 
@@ -246,7 +180,7 @@ chứa mọi thứ máy đang phát **trừ cây tiến trình ViNarrator**. B�
 gian, và vòng lặp tự-nghe-mình trở thành bất khả thi về mặt cấu trúc.
 
 `cpal` không mở được đường này nên phần đó gọi WASAPI trực tiếp (`src-tauri/src/loopback.rs`,
-không thêm thư viện — crate `windows` vốn đã có sẵn cho OCR/TTS). Máy cũ hơn thì tự lùi về cpal
+không thêm thư viện — crate `windows` vốn đã có sẵn cho TTS). Máy cũ hơn thì tự lùi về cpal
 + bịt tai như cũ và báo lên thanh trạng thái.
 
 Test `loopback::tests::khong_nghe_thay_tieng_cua_chinh_minh` phát tiếng từ chính tiến trình đó
@@ -399,41 +333,31 @@ qua (hàng đợi chỉ giữ 3).
 
 | File | Vai trò | Port từ (bản Python) |
 |------|---------|------------------------|
-| `src-tauri/src/capture.rs` | chụp vùng màn hình BGRA + tô trắng vùng loại trừ | `capture.py`, `mask_exclusion` |
-| `src-tauri/src/ocr.rs` | chọn engine + `Windows.Media.Ocr` | `ocr.py` (winsdk) |
-| `src-tauri/src/oneocr.rs` | OneOCR (Snipping Tool) + tự chép runtime | — (mới) |
 | `src-tauri/src/translate.rs` | Google Translate + LLM (OpenAI-compatible) | `translate.py` (deep-translator) |
 | `src-tauri/src/tts.rs` | chọn giọng + `Windows.Media.SpeechSynthesis` + `PlaySound` | `tts.py` (winsdk + winsound) |
-| `src-tauri/src/asr.rs` | nghe loopback, cổng chặn tiếng của chính app, gom + chẻ câu | — (mới) |
+| `src-tauri/src/asr.rs` | nghe loopback, zipformer (Anh) / SenseVoice + VAD (Nhật/Hàn/Trung), cổng chặn tiếng của chính app, gom + chẻ câu | — (mới) |
 | `src-tauri/src/speechmatics.rs` | nhận dạng qua Speechmatics (WebSocket đồng bộ) | — (mới) |
 | `src-tauri/src/stretch.rs` | đổi tốc độ đọc mà giữ cao độ (WSOLA) | — (mới) |
 | `src-tauri/src/runtime.rs` | tải file + tiến độ, đọc stderr worker, kiểm đĩa, chỉnh âm lượng | — (mới) |
 | `src-tauri/src/vieneu.rs` | giọng VieNeu + tự nuôi Python bằng `uv` | — (mới) |
 | `src-tauri/src/vieneu_worker.py` | worker Python, nhúng vào exe rồi ghi ra đĩa lúc cài | — (mới) |
 | `src-tauri/src/wave_out.rs` | phát liền mạch bằng hàng đợi đệm `waveOut` (cho VieNeu) | — (mới) |
-| `src-tauri/src/dedup.rs` | chống đọc trùng phụ đề cuộn | `dedup.py` |¹
 | `src-tauri/src/speech_queue.rs` | hàng đợi đọc (dedup + cap 3) | `speech_queue.py` |
-| `src-tauri/src/narrator.rs` | chụp→OCR→dedup **hoặc** nghe→nhận dạng, rồi dịch→đọc | `narrator.py` |
+| `src-tauri/src/narrator.rs` | nghe→nhận dạng→dịch→đọc | `narrator.py` |
 | `src-tauri/src/config.rs` | đọc/ghi config | `config.py` |
 | `src/App.tsx` | giao diện | `gui.py` |
-| `src/overlay/Overlay.tsx` | overlay kéo chọn vùng | `region_select.py` |
+| `src/captions/Captions.tsx` | phụ đề nổi trong game | — (mới) |
 
-¹ **Sửa một bug port từ bản Python:** luật "trừ hết phần đã đọc, còn ≤1 từ thì bỏ" chạy cả khi
-không trừ được gì, nên câu **một từ** (`Run!`, `Help!`) luôn đếm ra 1 và bị tuyên trùng dù chưa
-đọc bao giờ — đúng loại câu cảm thán hay gặp trong game. Nay chỉ áp luật khi thực sự có trừ.
-
-**Dịch chạy ở thread riêng.** Một câu dịch bằng AI tốn 200–800ms; để chung vòng chụp thì khung
-kế tiếp trễ đúng ngần ấy và phụ đề đổi trong lúc đó là mất luôn. Thread chụp đẩy câu qua channel,
-thread dịch gom hết cái đã tới rồi **bỏ bớt, chỉ giữ 3 câu mới nhất** — dịch không kịp phụ đề thì
-thà bỏ câu cũ còn hơn đọc trễ cả phút.
+**Dịch chạy ở thread riêng.** Một câu dịch bằng AI tốn 200–800ms. Thread nghe đẩy câu qua
+channel, thread dịch gom hết cái đã tới rồi **bỏ bớt, chỉ giữ 3 câu mới nhất** — dịch không kịp
+thoại thì thà bỏ câu cũ còn hơn đọc trễ cả phút.
 
 Thread này **phải tự kiểm tra cờ `running`**. `stop_playback()` chỉ xoá hàng đợi TTS; nếu thread
 dịch cứ dịch nốt rồi `speak()` thì nạp lại vào đúng cái hàng đợi vừa xoá — bấm DỪNG xong vẫn
 nghe thêm mấy câu. Đo bằng server dịch giả (cố tình chậm 1,5s/câu): bản chưa vá gửi request
 **sau khi bấm dừng 1 giây**; bản đã vá dừng hẳn, theo dõi thêm 8s không có gì.
 
-Unit test của bản Python (`tests/test_dedup.py`, `tests/test_speech_queue.py`) đã port nguyên
-sang Rust và đều pass — dùng để kiểm chứng bản port. Cột "port từ" trỏ tới file của bản Python,
+Unit test của bản Python (`tests/test_speech_queue.py`) đã port nguyên sang Rust và đều pass — dùng để kiểm chứng bản port. Cột "port từ" trỏ tới file của bản Python,
 xem được ở commit `64e09eb`.
 
 ## Bản Python cũ
@@ -449,7 +373,7 @@ Còn một thứ của bản Python **chưa có** ở bản Rust:
 
 | Bỏ | Vì sao | Muốn có lại |
 |---|---|---|
-| Chế độ "Đọc thuần" (OCR tiếng Việt, EasyOCR) | Windows OCR không hỗ trợ tiếng Việt | nhúng PaddleOCR ONNX qua crate `ort` |
+| Đọc phụ đề trên màn hình (OCR) | bỏ ở bản 0.1.5 để tập trung vào nghe tiếng | lấy lại từ commit `c0a59c7` (`ocr.rs`, `oneocr.rs`, `capture.rs`, `dedup.rs`) |
 
 *(Giọng neural đã có lại bằng VieNeu — xem **Giọng đọc** ở trên. Piper và MMS bỏ hẳn.)*
 
